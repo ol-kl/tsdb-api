@@ -108,6 +108,7 @@ static void set_tsdb_values(set_args *args) {
 
     open_db(args->file, &db);
     values = alloc_values(args, db.values_per_entry);
+    //normalize_epoch(&db, &epoch);
     goto_epoch(&db, epoch);
     set_values(&db, args->key, values);
     free(values);

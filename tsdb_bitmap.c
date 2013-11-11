@@ -9,6 +9,7 @@ void clear_bit(u_int32_t *words, int n) {
 }
 
 int get_bit(u_int32_t *words, int n) {
+  /*return 1 if n-th bit is set, 0 otherwise*/
     u_int32_t bit = words[WORD_OFFSET(n)] & (1 << BIT_OFFSET(n));
     return bit != 0; 
 }

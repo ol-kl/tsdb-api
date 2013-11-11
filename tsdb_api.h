@@ -54,7 +54,7 @@ typedef struct {
     u_int16_t values_per_entry;
     u_int16_t values_len;
     u_int32_t unknown_value;
-    u_int32_t lowest_free_index;
+    u_int32_t lowest_free_index; //started with 0
     u_int32_t slot_duration;
     qlz_state_compress state_compress;
     qlz_state_decompress state_decompress;

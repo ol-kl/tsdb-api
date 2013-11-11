@@ -219,9 +219,11 @@ void tsdb_close(tsdb_handler *handler) {
 void normalize_epoch(tsdb_handler *handler, u_int32_t *epoch) {
     *epoch -= *epoch % handler->slot_duration;
     *epoch += timezone - daylight * 3600;
+    //printf("TZ: %ld, DL: %d, delta: %d\n",timezone,daylight,timezone-daylight*3600);
 }
 
 int tsdb_get_key_index(tsdb_handler *handler, char *key, u_int32_t *index) {
+/*get index by key*/
     void *ptr;
     u_int32_t len;
     char str[32] = { 0 };
@@ -232,7 +234,6 @@ int tsdb_get_key_index(tsdb_handler *handler, char *key, u_int32_t *index) {
         *index = *(u_int32_t*)ptr;
         return 0;
     }
-
     return -1;
 }
 
@@ -340,6 +341,8 @@ static int ensure_key_index(tsdb_handler *handler, char *key,
 
 static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
                                    u_int64_t *offset, u_int8_t for_write) {
+  /*index - absolute value. This func loads a respective fragment of the current epoch,
+   *decompresses it and put in the chunk struct (memory gets allocated internally) */
 
     if (!handler->chunk.data) {
         if (!for_write) {
@@ -375,7 +378,9 @@ static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
             qlz_decompress(value, handler->chunk.data,
                            &handler->state_decompress);
         }
+        //absolute index of a first element in the given fragment
         handler->chunk.base_index = fragment * CHUNK_GROWTH;
+        //relative index to that fragment
         index -= handler->chunk.base_index;
     }
 
@@ -407,6 +412,7 @@ static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
         goto get_offset;
     }
 
+    //relative index within current fragment(chunk), offset is in bytes
     *offset = handler->values_len * *index;
 
     if (*offset >= handler->chunk.data_len) {
@@ -419,7 +425,7 @@ static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
 
 static int prepare_offset_by_key(tsdb_handler *handler, char *key,
                                  u_int64_t *offset, u_int8_t for_write) {
-    u_int32_t index;
+    u_int32_t index; //absolute value, not relative to a fragment
 
     if (!handler->chunk.epoch) {
         return -1;
@@ -519,9 +525,10 @@ void tsdb_flush(tsdb_handler *handler) {
 
 static int load_tag_array(tsdb_handler *handler, char *name,
                           tsdb_tag *tag) {
+  //find a tag structure named "name" and load it into "tag"
     void *ptr;
     u_int32_t len;
-    char str[255] = { 0 };
+    char str[255] = { 0 }; //empty string
 
     snprintf(str, sizeof(str), "tag-%s", name);
 
@@ -529,6 +536,7 @@ static int load_tag_array(tsdb_handler *handler, char *name,
         u_int32_t *array;
         array = (u_int32_t*)malloc(len);
         if (array == NULL) {
+            //memory allocation failed
             free(ptr);
             return -2;
         }
@@ -542,8 +550,10 @@ static int load_tag_array(tsdb_handler *handler, char *name,
 }
 
 static int allocate_tag_array(tsdb_tag *tag) {
-    u_int32_t array_len = CHUNK_GROWTH / sizeof(u_int32_t);
-
+   // u_int32_t array_len = CHUNK_GROWTH / sizeof(u_int32_t);
+    /*it will only contain indices enough for one chunk,
+     * better is CHUNK_GROWTH*MAX_NUM_FRAGMENTS / BITS_PER_WORD + 1 */
+    u_int32_t array_len = 1 + CHUNK_GROWTH*MAX_NUM_FRAGMENTS / BITS_PER_WORD;
     u_int32_t* array = malloc(array_len);
     if (!array) {
         return -1;
@@ -558,6 +568,7 @@ static int allocate_tag_array(tsdb_tag *tag) {
 }
 
 static void set_tag(tsdb_handler *handler, char *name, tsdb_tag *tag) {
+  //tag->array must be allocated!
     char str[255];
 
     snprintf(str, sizeof(str), "tag-%s", name);
@@ -566,6 +577,7 @@ static void set_tag(tsdb_handler *handler, char *name, tsdb_tag *tag) {
 }
 
 static int ensure_tag_array(tsdb_handler *handler, char *name, tsdb_tag *tag) {
+  // if tag exists in DF - load it, otherwise allocates empty one of size CHUNK_GROWTH/size of uint32
     if (load_tag_array(handler, name, tag) == 0) {
         return 0;
     }
@@ -578,9 +590,11 @@ static int ensure_tag_array(tsdb_handler *handler, char *name, tsdb_tag *tag) {
 }
 
 int tsdb_tag_key(tsdb_handler *handler, char *key, char *tag_name) {
+  //map key to tag_name. tag_name may be mapped to an arbitrary number of keys (indices respectively)
     u_int32_t index;
 
     if (tsdb_get_key_index(handler, key, &index) == -1) {
+        // returned index is an absolute value
         return -1;
     }
 
@@ -589,7 +603,7 @@ int tsdb_tag_key(tsdb_handler *handler, char *key, char *tag_name) {
         return -1;
     }
 
-    set_bit(tag.array, index);
+    set_bit(tag.array, index); // set index-th bit of tag.array to 1
     set_tag(handler, tag_name, &tag);
 
     free(tag.array);
@@ -647,32 +661,50 @@ int tsdb_get_consolidated_tag_indexes(tsdb_handler *handler,
                                       u_int16_t tag_names_len,
                                       int consolidator,
                                       u_int32_t *indexes,
-                                      u_int32_t indexes_len,
+                                      u_int32_t indexes_len, // up to how many indices to consider
                                       u_int32_t *count) {
-    u_int32_t i, j, max_index;
+  /*This function will set aggregated indices to "indexes" and its number to "count"*/
+    u_int32_t i, j, max_index, max_word, extra_bits, nullify_mask;
     tsdb_tag consolidated, current;
 
     consolidated.array = NULL;
     consolidated.array_len = 0;
     max_index = max_tag_index(handler, indexes_len);
+    max_word = max_index / BITS_PER_WORD;
+    extra_bits = max_index % BITS_PER_WORD;
+    nullify_mask = 0; nullify_mask = ~nullify_mask;
+    nullify_mask = nullify_mask >> (BITS_PER_WORD - extra_bits); //Logical shift for unsinged integers - padding with zeros MSB positions
 
     *count = 0;
 
     for (i = 0; i < tag_names_len; i++) {
         if (load_tag_array(handler, tag_names[i], &current) == 0) {
             if (consolidated.array) {
-                for (j = 0; j < max_index; j++) {
+                for (j = 0; j <= max_word; j++) {
                     switch (consolidator) {
                     case TSDB_AND:
+                        if (j == max_word){
+                            consolidated.array[j] &= current.array[j] & nullify_mask;
+                            break; //DEBUG THIS!
+                        }
                         consolidated.array[j] &= current.array[j];
                         break;
                     case TSDB_OR:
+                        if (j == max_word){
+                            consolidated.array[j] &= current.array[j] & nullify_mask;
+                            break; //DEBUG THIS!
+                        }
                         consolidated.array[j] |= current.array[j];
                         break;
                     default:
+                        if (j == max_word){
+                            consolidated.array[j] &= current.array[j] & nullify_mask;
+                            break; //DEBUG THIS!
+                        }
                         consolidated.array[j] = current.array[j];
                     }
                 }
+                free(current.array);
             } else {
                 consolidated.array = current.array;
                 consolidated.array_len = current.array_len;
