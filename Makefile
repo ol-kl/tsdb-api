@@ -16,7 +16,9 @@ TARGETS      = $(TSDB_LIB) \
                test-simple \
                test-advanced \
                test-bitmaps \
-               test-tags
+               test-tags \
+               test-queryTime \
+#               test-nothing
 
 all: $(TARGETS)
 

@@ -34,6 +34,7 @@
 
 typedef struct {
     u_int8_t *data;
+    u_int8_t new_epoch_flag;
     u_int32_t data_len;
     u_int32_t epoch;
     u_int8_t growable;
@@ -54,6 +55,8 @@ typedef struct {
     u_int16_t values_per_entry;
     u_int16_t values_len;
     u_int32_t unknown_value;
+    u_int32_t number_of_epochs;
+    u_int32_t most_recent_epoch;
     u_int32_t lowest_free_index; //started with 0
     u_int32_t slot_duration;
     qlz_state_compress state_compress;
@@ -62,7 +65,7 @@ typedef struct {
     DB *db;
 } tsdb_handler;
 
-extern int  tsdb_open(char *tsdb_path, tsdb_handler *handler,
+extern int  tsdb_open(const char *tsdb_path, tsdb_handler *handler,
 		      u_int16_t *values_per_entry,
 		      u_int32_t slot_duration,
 		      u_int8_t read_only);

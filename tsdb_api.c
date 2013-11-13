@@ -63,7 +63,7 @@ static int db_get(tsdb_handler *handler,
     }
 }
 
-int tsdb_open(char *tsdb_path, tsdb_handler *handler,
+int tsdb_open(const char *tsdb_path, tsdb_handler *handler,
 	      u_int16_t *values_per_entry,
 	      u_int32_t slot_duration,
 	      u_int8_t read_only) {
@@ -137,6 +137,34 @@ int tsdb_open(char *tsdb_path, tsdb_handler *handler,
         }
     }
 
+    if (db_get(handler, "num_epochs",
+                   strlen("num_epochs"),
+                   &value, &value_len) == 0) {
+            handler->number_of_epochs = *((u_int32_t*)value);
+        } else {
+            if (!handler->read_only) {
+                handler->number_of_epochs = 0;
+                db_put(handler, "num_epochs",
+                       strlen("num_epochs"),
+                       &handler->number_of_epochs,
+                       sizeof(handler->number_of_epochs));
+            }
+        }
+
+    if (db_get(handler, "recent_epoch",
+                   strlen("recent_epoch"),
+                   &value, &value_len) == 0) {
+            handler->most_recent_epoch = *((u_int32_t*)value);
+        } else {
+            if (!handler->read_only) {
+                handler->most_recent_epoch = 0;
+                db_put(handler, "recent_epoch",
+                       strlen("recent_epoch"),
+                       &handler->most_recent_epoch,
+                       sizeof(handler->most_recent_epoch));
+            }
+        }
+
     handler->values_len = handler->values_per_entry * sizeof(tsdb_value);
 
     trace_info("lowest_free_index: %u", handler->lowest_free_index);
@@ -158,6 +186,15 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
     char str[32];
 
     if (!handler->chunk.data) return;
+    if (handler->chunk.new_epoch_flag) {
+        handler->number_of_epochs ++;
+        db_put(handler, "num_epochs", strlen("num_epochs"), &handler->number_of_epochs, sizeof(handler->number_of_epochs));
+        if (handler->chunk.epoch > handler->most_recent_epoch) {
+            handler->most_recent_epoch = handler->chunk.epoch;
+            db_put(handler, "recent_epoch", strlen("recent_epoch"),
+                   &handler->most_recent_epoch, sizeof(handler->most_recent_epoch));
+        }
+    }
 
     fragment_size = handler->values_len * CHUNK_GROWTH;
     new_len = handler->chunk.data_len + CHUNK_LEN_PADDING;
@@ -197,6 +234,7 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
     memset(&handler->chunk, 0, sizeof(handler->chunk));
     handler->chunk.epoch = 0;
     handler->chunk.data_len = 0;
+    handler->chunk.new_epoch_flag = 0;
 }
 
 void tsdb_close(tsdb_handler *handler) {
@@ -217,6 +255,8 @@ void tsdb_close(tsdb_handler *handler) {
 }
 
 void normalize_epoch(tsdb_handler *handler, u_int32_t *epoch) {
+  extern long int timezone;
+  extern int daylight;
     *epoch -= *epoch % handler->slot_duration;
     *epoch += timezone - daylight * 3600;
     //printf("TZ: %ld, DL: %d, delta: %d\n",timezone,daylight,timezone-daylight*3600);
@@ -256,13 +296,14 @@ int tsdb_goto_epoch(tsdb_handler *handler,
     u_int32_t value_len, fragment = 0;
     char str[32];
 
+    normalize_epoch(handler, &epoch);
     if (handler->chunk.epoch == epoch) {
         return 0;
     }
 
     tsdb_flush_chunk(handler);
 
-    normalize_epoch(handler, &epoch);
+    //normalize_epoch(handler, &epoch);
     snprintf(str, sizeof(str), "%u-%u", epoch, fragment);
 
     rc = db_get(handler, str, strlen(str), &value, &value_len);
@@ -273,6 +314,7 @@ int tsdb_goto_epoch(tsdb_handler *handler,
 
     handler->chunk.epoch = epoch;
     handler->chunk.growable = growable;
+    if (rc == -1 ) {handler->chunk.new_epoch_flag = 1;}
 
     if (rc == 0) {
         u_int32_t len, offset = 0;
@@ -402,6 +444,7 @@ static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
         }
 
         memcpy(ptr, handler->chunk.data, handler->chunk.data_len);
+        free(handler->chunk.data);
         memset(&ptr[handler->chunk.data_len],
                handler->unknown_value, to_add);
         handler->chunk.data = ptr;
@@ -412,7 +455,7 @@ static int prepare_offset_by_index(tsdb_handler *handler, u_int32_t *index,
         goto get_offset;
     }
 
-    //relative index within current fragment(chunk), offset is in bytes
+    //relative index within current fragment(chunk), offset is in bytes, index in elements (tsdb_value * values_per_entry)
     *offset = handler->values_len * *index;
 
     if (*offset >= handler->chunk.data_len) {
