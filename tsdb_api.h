@@ -52,8 +52,8 @@ typedef u_int32_t tsdb_value;
 typedef struct {
     u_int8_t alive;
     u_int8_t read_only;
-    u_int16_t values_per_entry;
-    u_int16_t values_len;
+    u_int16_t values_per_entry; //1,2,3... number of values to store per epoch per time-series
+    u_int16_t values_len; //=values_per_entry * sizeof(tsdb_value)
     u_int32_t unknown_value;
     u_int32_t number_of_epochs;
     u_int32_t most_recent_epoch;
@@ -78,6 +78,23 @@ extern int tsdb_goto_epoch(tsdb_handler *handler,
                            u_int32_t epoch_value,
                            u_int8_t fail_if_missing,
                            u_int8_t growable);
+/* This function will go to the epoch.
+ * If the epoch after normalization equals the current one,
+ * the function does nothing and returns 0. In all other
+ * cases it FLUSHES all changes into disk.
+ * If the epoch exists, then all its fragments will be loaded,
+ * decompressed and glued together into a continuous chunk in memory.
+ * If the epoch does not exist, a new empty chunk will be set
+ * to the epoch.
+ * This function can be used to check existence of epochs
+ * in the TSDB, but if an epoch exists it will be loaded
+ * and decompressed automatically. To avoid the overhead
+ *  one should use tsdb_epoch_exists(). */
+
+extern int tsdb_epoch_exists(tsdb_handler *handler,
+                    u_int32_t epoch);
+/* This function checks whether the epoch exists in the DB, but neither
+ * load it nor make any changes in the *handler */
 
 extern int tsdb_set(tsdb_handler *handler, char *key, tsdb_value *value);
 

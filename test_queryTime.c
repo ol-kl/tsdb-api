@@ -3,6 +3,8 @@
  *
  *  Created on: Nov 12, 2013
  *      Author: Oleg Klyudt
+ *
+ * To compile this file, one needs libdb-dev and librrd-dev packages installed.
  */
 
 #include "tsdb_api.h"
@@ -10,38 +12,50 @@
 #include <sys/timex.h>
 #include <unistd.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
     char *DB_file_name;
     u_int8_t populate;
     u_int8_t query;
+    u_int8_t debug_lvl;
+    u_int32_t seed;
 } set_container;
 
-#define DEFAULT_VALUE 500
+#define BYTE(X) ((unsigned char *)(X))
+#define DEFAULT_VALUE 1000000
 #define METRICS_NUM 1000000
 #define STRING_MAX_LEN 20
 #define TIME_STEP 60 //seconds
 #define NUM_EPOCHS 60 //in time steps
+#define RANDOM_FILL 0
+#define CONTIGUOUS_FILL 1
 
 static void help(int code) {
-    printf("test-queryTime (-c DB_file_name | -q DB_file_name | -h) \n");
+    printf("test-queryTime (-c DB_file_name | -q DB_file_name | -h ) [-s seed] \n");
     printf("-c creates a new DB file given by DB_file_name for subsequent test with the key -q\n");
     printf("-q performs query tests on the given DB DB_file_name and print profiling time they took\n");
-    printf("-h shows this brief help\n");
+    printf("-s to set a seed for a random generator. 1 by default. If it was set during the creation of DBs with the option -c, then the same seed value must be provided while performing profiling tests with the option -q\n");
+    printf("-d to set a debug level in the range 0-99, where 99 is the most verbose and 0 for quiet mode. 0 by default.\n");
+    printf("-h shows this brief help\n\n");
+    printf("Usage: test-queryTime -c myDB.tsdb -s 50\n");
+    printf("Then: test-queryTime -q myDB.tsdb -s 50\n");
     exit(code);
 }
 
 static void process_args(int argc, char *argv[], set_container *settings) {
 
-  if (argc < 2 || argc > 3){
+  if (argc < 2 || argc > 5){
       help(1);
   }
 
   int c;
   settings->populate = 0;
   settings->query = 0;
+  settings->seed = 1;
+  settings->debug_lvl = 0;
 
-  while ((c = getopt(argc, argv, "hc:q:")) != -1) {
+  while ((c = getopt(argc, argv, "hc:q:s:d:")) != -1) {
       switch (c) {
       case 'h':
         help(0);
@@ -53,6 +67,17 @@ static void process_args(int argc, char *argv[], set_container *settings) {
       case 'q':
         settings->DB_file_name = optarg;
         settings->query = 1;
+        break;
+      case 's':
+        settings->seed = *optarg;
+        break;
+      case 'd':
+        if (*optarg >= 0 && *optarg <= 99){
+            settings->debug_lvl = *optarg;
+        } else {
+            fprintf(stdout,"debug level was wrong\n");
+            help(1);
+        }
         break;
       default:
         help(1);
@@ -95,6 +120,30 @@ int timeval_subtract (result, x, y)
   return 0;
 }
 
+float timeval2float (struct timeval *timestamp) {
+
+  return (float)timestamp->tv_sec + (float)timestamp->tv_usec*1E-6;
+
+}
+
+void time2str(u_int32_t *tmr, char* str, size_t strsize) {
+  time_t temp_buf = *tmr; //we need it because alignment of types u_int32_t and time_t may not coincide
+  struct tm *tmr_struct = gmtime(&temp_buf);
+  strftime(str,strsize,"%T %d-%m-%Y",tmr_struct);
+}
+
+void print_tsdb_info(tsdb_handler* handler) {
+  char str[30];
+  time2str(&handler->most_recent_epoch, str, 30);
+  fprintf(stdout,"========== TSDB INFO ==========\n");
+  fprintf(stdout,"num of columns: %d\n",handler->lowest_free_index);
+  fprintf(stdout,"num of rows: %d\n",handler->number_of_epochs);
+  fprintf(stdout,"most recent epoch: %s\n",str);
+  fprintf(stdout,"time step between rows: %d s\n",handler->slot_duration);
+  fprintf(stdout,"size of one element in TSDB: %d bytes\n",handler->values_len);
+  fprintf(stdout,"===============================\n");
+}
+
 
 void ensure_old_dbFile_is_gone(const char* fname) {
   extern char *program_invocation_short_name;
@@ -118,22 +167,50 @@ void ensure_old_dbFile_is_gone(const char* fname) {
   }
 }
 
-void populate_DB(set_container* settings){
+
+int rrand(int m)
+{
+  return (int)((double)m * ( rand() / (RAND_MAX+1.0) ));
+}
+
+
+void shuffle(void *obj, size_t nmemb, size_t size)
+{
+  //Fisher–Yates shuffle algorithm
+  void *temp = malloc(size);
+  size_t n = nmemb;
+  while ( n > 1 ) {
+    size_t k = rrand(n--);
+    memcpy(temp, BYTE(obj) + n*size, size);
+    memcpy(BYTE(obj) + n*size, BYTE(obj) + k*size, size);
+    memcpy(BYTE(obj) + k*size, temp, size);
+  }
+  free(temp);
+}
+
+void populate_DB(set_container* settings, u_int32_t* index, int mode){
     extern char *program_invocation_short_name;
     tsdb_handler db_handler;
-    char metric[32];
+    char metric[32], timeStr[30];
     int8_t rv;
     u_int16_t values_per_entry = 1;
-    tsdb_value default_value = DEFAULT_VALUE;
     u_int32_t slot_duration = TIME_STEP; //seconds
-    u_int8_t read_only = 0;
-    time_t cur_time = time(NULL);
+    u_int8_t read_only = 0, time_noise = 0;
+    u_int32_t cur_time = time(NULL), checkTime;
     u_int32_t num_Epochs = NUM_EPOCHS; // number of Epochs in the TSDB (effectively rows, not taking into account splitting in chunks)
     u_int32_t num_Metrics = METRICS_NUM, i, j;
     struct ntptimeval time_start, time_end;
     struct timeval diff;
+    float result = 0;
 
-    //const char settin = "test-queryTime.tsdb";
+    if (mode == RANDOM_FILL) {
+        //make random permutations of the array of indices keeping the original array untouched
+        u_int32_t *index_rand = (u_int32_t* ) malloc(sizeof(u_int32_t)*METRICS_NUM);
+        memcpy(index_rand, index, sizeof(u_int32_t)*METRICS_NUM);
+
+        shuffle(index_rand,METRICS_NUM,sizeof(u_int32_t));
+        index = (u_int32_t*)index_rand;
+    }
 
     ensure_old_dbFile_is_gone(settings->DB_file_name);
 
@@ -143,49 +220,78 @@ void populate_DB(set_container* settings){
         exit(-1);
     }
 
+    normalize_epoch(&db_handler,&cur_time);
+    time2str(&cur_time, timeStr, 30);
+    fprintf(stdout,"Most recent epoch will be (check it!): %s (UTC)\n", timeStr);
+
     fprintf(stdout,"Start populating DB. Number of columns: %u, number of rows: %lu\n",num_Metrics,num_Epochs);
+
+    if (mode == RANDOM_FILL) {
+        fprintf(stdout,"Using random column indices to write, every write call is affected by uniform time noise\n");
+    } else if (mode == CONTIGUOUS_FILL) {
+        fprintf(stdout,"Using contiguous column indices to write, every write call is affected by uniform time noise\n");
+    }
+
     for(j=0; j < num_Epochs; j++) {
+
         ntp_gettime(&time_start);
-        rv = tsdb_goto_epoch(&db_handler, (u_int32_t)(cur_time - j*(time_t)slot_duration), 0, 1);
-        assert_int_equal(0,rv);
 
         if (j == 0) {
             for(i=0; i < num_Metrics; i++){
+                rv = tsdb_goto_epoch(&db_handler, cur_time - j*slot_duration, 0, 1);
+                assert_int_equal(0,rv);
                 sprintf(metric,"metric-%u",i+1);
-                rv = tsdb_set(&db_handler,metric,&default_value);
+                rv = tsdb_set(&db_handler,metric,&i);
                 assert_int_equal(0,rv);
             }
-        }else{
-            //for(i=num_Metrics; i > 0; i--){
-                sprintf(metric,"metric-%u",num_Metrics); //num_Metrics <-> i
-                rv = tsdb_set(&db_handler,metric,&default_value);
+        } else {
+            for (i=0; i < num_Metrics; i++){
+                time_noise = rand()%(TIME_STEP - 1);
+                rv = tsdb_goto_epoch(&db_handler,cur_time - j*slot_duration + time_noise, 0, 1);
                 assert_int_equal(0,rv);
-           // }
+                checkTime = cur_time - j*(time_t)slot_duration;
+                normalize_epoch(&db_handler,&checkTime);
+                assert_int_equal(db_handler.chunk.epoch, checkTime);
+                sprintf(metric,"metric-%u",index[i]+1);
+                rv = tsdb_set(&db_handler, metric, &index[i]);
+                assert_int_equal(0,rv);
+            }
         }
 
         ntp_gettime(&time_end);
         timeval_subtract(&diff,&time_start.time,&time_end.time);
-        fprintf(stdout,"Epoch written: %lu / %lu, time for one epoch: %lu.%lu s\n",j+1,num_Epochs,diff.tv_sec,diff.tv_usec);
+        result += timeval2float(&diff);
+        fprintf(stdout,"Epoch written: %lu / %lu, for %.6f s\r", j+1, num_Epochs, timeval2float(&diff));
         rv=fflush(stdout);
         assert_int_equal(0,rv);
     }
     fprintf(stdout,"\n");
+
+    tsdb_flush(&db_handler);
+    print_tsdb_info(&db_handler);
+
     tsdb_close(&db_handler);
+
     fprintf(stdout,"DB was populated and flushed\n");
+    fprintf(stdout,"Avg time to write one row: %.6f s\n\n",result/num_Epochs);
+
+    if (mode == RANDOM_FILL) {
+        free(index);
+    }
 }
 
-void query_and_profile_DB(set_container* settings){
+void query_and_profile_DB(set_container* settings, u_int32_t* index){
   extern char *program_invocation_short_name;
   tsdb_handler db_handler;
   int8_t rv;
-  u_int32_t *index, j, i;
-  index = (u_int32_t*)malloc(METRICS_NUM*sizeof(u_int32_t));
+  u_int32_t j, i;
   u_int16_t values_per_entry;
+  float one_value_read=0, row_read=0;
   tsdb_value **interim_data, *returnedValue;
-  struct ntptimeval time_start, time_end;
+  struct ntptimeval time_start, time_end, time_start_long;
   struct timeval diff;
 
-  ntp_gettime(&time_start);
+  ntp_gettime(&time_start_long);
   //Though we dont need values_per_entry, but it must be provided to the function, otherwise segmentation_fault occurs
   if(tsdb_open(settings->DB_file_name,&db_handler,&values_per_entry,0,1)) {
       fprintf (stderr, "%s: Couldn't open file %s; %s\n",
@@ -196,17 +302,14 @@ void query_and_profile_DB(set_container* settings){
   interim_data = (tsdb_value**)malloc(sizeof(tsdb_value*));
   *interim_data = (tsdb_value*)malloc(db_handler.number_of_epochs*sizeof(tsdb_value));
 
-  rv = tsdb_get_key_index(&db_handler,"metric-5",&index[0]);
-  assert_int_equal(0,rv);
-
   for(j=0; j < db_handler.number_of_epochs; j++) {
-      rv = tsdb_goto_epoch(&db_handler, (u_int32_t)(db_handler.most_recent_epoch - j*(time_t)db_handler.slot_duration), 1, 0);
+      rv = tsdb_goto_epoch(&db_handler, db_handler.most_recent_epoch - j*db_handler.slot_duration, 1, 0);
       assert_int_equal(0,rv);
 
-      rv=tsdb_get_by_index(&db_handler,&index[0],&returnedValue);
+      rv=tsdb_get_by_index(&db_handler,&index[METRICS_NUM/2],&returnedValue);
       assert_int_equal(0,rv);
       (*interim_data)[j] = *returnedValue;
-      assert_int_equal(DEFAULT_VALUE,(*interim_data)[j]); //checking if the retrieved value is the one we have stored previously
+      assert_int_equal(index[METRICS_NUM/2],(*interim_data)[j]); //checking if the retrieved value is the one we have stored previously
   }
 
   ntp_gettime(&time_end);
@@ -214,8 +317,8 @@ void query_and_profile_DB(set_container* settings){
   free(*interim_data);
   free(interim_data);
 
-  timeval_subtract(&diff,&time_start.time,&time_end.time);
-  fprintf(stdout,"We have read successfully 1 column in the TSDB. It took: %lu.%lu s\n",diff.tv_sec,diff.tv_usec);
+  timeval_subtract(&diff,&time_start_long.time,&time_end.time);
+  fprintf(stdout,"We have read successfully 1 column in the TSDB. It took: %lu.%06lu s\n",diff.tv_sec,diff.tv_usec);
 
   /*****************NEW TEST*******************/
   //char metrics_to_query[METRICS_NUM][STRING_MAX_LEN];
@@ -229,7 +332,7 @@ void query_and_profile_DB(set_container* settings){
       assert_true(rv > 0);
   }
 
-  ntp_gettime(&time_start);
+
     //Though we dont need values_per_entry, but it must be provided to the function, otherwise segmentation_fault occurs
   if(tsdb_open(settings->DB_file_name,&db_handler,&values_per_entry,0,1)) {
       fprintf (stderr, "%s: Couldn't open file %s; %s\n",
@@ -244,21 +347,32 @@ void query_and_profile_DB(set_container* settings){
       assert_true(interim_data[i] != NULL);
   }
 
-  for(i=0;i < METRICS_NUM; ++i){
-      rv = tsdb_get_key_index(&db_handler,metrics_to_query[i],&index[i]);
-      assert_int_equal(0,rv);
-  }
-
+  ntp_gettime(&time_start_long);
   for(j=0; j < db_handler.number_of_epochs; j++) {
-      rv = tsdb_goto_epoch(&db_handler, (u_int32_t)(db_handler.most_recent_epoch - j*(time_t)db_handler.slot_duration), 1, 0);
+      rv = tsdb_goto_epoch(&db_handler, db_handler.most_recent_epoch - j*db_handler.slot_duration, 1, 0);
       assert_int_equal(0,rv);
 
+      ntp_gettime(&time_start); i=rand()%METRICS_NUM;
+      rv=tsdb_get_by_index(&db_handler,&index[i],&returnedValue);
+                assert_int_equal(0,rv);
+                interim_data[i][j] = *returnedValue;
+                assert_int_equal(index[i], interim_data[i][j]); //checking if the retrieved value is the one we have stored previously
+      ntp_gettime(&time_end);
+      timeval_subtract(&diff,&time_start.time,&time_end.time);
+      one_value_read += timeval2float(&diff);
+      //fprintf(stdout,"Time to read 1 random value from 1 epoch: %lu.%06lu s\n",diff.tv_sec,diff.tv_usec); fflush(stdout);
+
+      ntp_gettime(&time_start);
       for(i=0;i < METRICS_NUM; ++i){
           rv=tsdb_get_by_index(&db_handler,&index[i],&returnedValue);
           assert_int_equal(0,rv);
           interim_data[i][j] = *returnedValue;
-          assert_int_equal(DEFAULT_VALUE, interim_data[i][j]); //checking if the retrieved value is the one we have stored previously
+          assert_int_equal(index[i], interim_data[i][j]); //checking if the retrieved value is the one we have stored previously
       }
+      ntp_gettime(&time_end);
+      timeval_subtract(&diff,&time_start.time,&time_end.time);
+      row_read += timeval2float(&diff);
+      //fprintf(stdout,"Time to read %lu random values from the same epoch: %lu.%06lu s\n", METRICS_NUM, diff.tv_sec,diff.tv_usec); fflush(stdout);
   }
 
   ntp_gettime(&time_end);
@@ -272,26 +386,44 @@ void query_and_profile_DB(set_container* settings){
       free(metrics_to_query[i]);
   }
   free(metrics_to_query);
-  free(index);
+  //free(index);
 
-  timeval_subtract(&diff,&time_start.time,&time_end.time);
-  fprintf(stdout,"We have read successfully %u columns in the TSDB. It took: %lu.%lu s\n",METRICS_NUM,diff.tv_sec,diff.tv_usec);
+  timeval_subtract(&diff,&time_start.time,&time_start_long.time);
+  fprintf(stdout,"We have read successfully all %u columns in the TSDB. It took: %lu.%06lu s\n",METRICS_NUM,diff.tv_sec,diff.tv_usec);
+  fprintf(stdout,"Avg time to read one random element in a row: %.6f\n", one_value_read / NUM_EPOCHS);
+  fprintf(stdout,"Avg time to read a row: %.6f\n", row_read / NUM_EPOCHS);
 }
 
 int main(int argc, char *argv[]) {
   set_container settings;
-  set_trace_level(0);
+  u_int32_t *index;
+  u_int32_t i;
 
   process_args(argc, argv, &settings);
 
+  set_trace_level(settings.debug_lvl);
+  srand(settings.seed);
+
+  index = (u_int32_t* ) malloc(sizeof(u_int32_t)*METRICS_NUM);
+
+  for (i=0;i<METRICS_NUM;++i){
+      index[i]=i;
+  }
+
   if (settings.populate) {
-      populate_DB(&settings);
+      fprintf(stdout,"*** TEST 1 ***\n");
+      populate_DB(&settings,index,CONTIGUOUS_FILL);
+      fprintf(stdout,"*** TEST 2 ***\n");
+      populate_DB(&settings,index,RANDOM_FILL);
   } else if (settings.query) {
-      query_and_profile_DB(&settings);
+      query_and_profile_DB(&settings,index);
   }
   else {
+      free(index);
       return -1;
   }
 
+
+  free(index);
   return 0;
 }
