@@ -24,7 +24,7 @@ typedef struct {
 
 #define BYTE(X) ((unsigned char *)(X))
 #define DEFAULT_VALUE 1000000
-#define METRICS_NUM 1000000
+#define METRICS_NUM 62000
 #define STRING_MAX_LEN 20
 #define TIME_STEP 60 //seconds
 #define NUM_EPOCHS 60 //in time steps
@@ -134,6 +134,7 @@ void time2str(u_int32_t *tmr, char* str, size_t strsize) {
 
 void print_tsdb_info(tsdb_handler* handler) {
   char str[30];
+  u_int32_t i;
   time2str(&handler->most_recent_epoch, str, 30);
   fprintf(stdout,"========== TSDB INFO ==========\n");
   fprintf(stdout,"num of columns: %d\n",handler->lowest_free_index);
@@ -141,6 +142,11 @@ void print_tsdb_info(tsdb_handler* handler) {
   fprintf(stdout,"most recent epoch: %s\n",str);
   fprintf(stdout,"time step between rows: %d s\n",handler->slot_duration);
   fprintf(stdout,"size of one element in TSDB: %d bytes\n",handler->values_len);
+  fprintf(stdout,"=========== EPOCHS ============\n");
+  for(i = 0; i< handler->number_of_epochs; ++i) {
+      time2str(&(handler->epoch_list[i]), str, 30);
+      fprintf(stdout,"%5d: %s\n", i+1, str);
+  }
   fprintf(stdout,"===============================\n");
 }
 
@@ -196,9 +202,11 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
     u_int16_t values_per_entry = 1;
     u_int32_t slot_duration = TIME_STEP; //seconds
     u_int8_t read_only = 0, time_noise = 0;
-    u_int32_t cur_time = time(NULL), checkTime;
+    u_int32_t cur_time = time(NULL), first_time = 0, checkTime;
     u_int32_t num_Epochs = NUM_EPOCHS; // number of Epochs in the TSDB (effectively rows, not taking into account splitting in chunks)
-    u_int32_t num_Metrics = METRICS_NUM, i, j;
+    u_int32_t num_Metrics = METRICS_NUM, missed_epochs=0, j;
+    u_int32_t *epoch_to_miss;
+    tsdb_value i, transient_value;
     struct ntptimeval time_start, time_end;
     struct timeval diff;
     float result = 0;
@@ -212,6 +220,14 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
         index = (u_int32_t*)index_rand;
     }
 
+    epoch_to_miss = (u_int32_t*) malloc(NUM_EPOCHS * sizeof(u_int32_t));
+    epoch_to_miss[0] = 0; // always write the first epoch
+    epoch_to_miss[NUM_EPOCHS - 1] = 0; // and the last
+    for(j = 1; j < NUM_EPOCHS - 1; ++j) {
+        epoch_to_miss[j] = rand() % 2;
+        if (epoch_to_miss[j]) missed_epochs++;
+    }
+
     ensure_old_dbFile_is_gone(settings->DB_file_name);
 
     if(tsdb_open(settings->DB_file_name,&db_handler,&values_per_entry,slot_duration,read_only)) {
@@ -221,10 +237,11 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
     }
 
     normalize_epoch(&db_handler,&cur_time);
-    time2str(&cur_time, timeStr, 30);
+    first_time += cur_time + TIME_STEP * (NUM_EPOCHS - 1);
+    time2str(&first_time, timeStr, 30);
     fprintf(stdout,"Most recent epoch will be (check it!): %s (UTC)\n", timeStr);
 
-    fprintf(stdout,"Start populating DB. Number of columns: %u, number of rows: %lu\n",num_Metrics,num_Epochs);
+    fprintf(stdout,"Start populating DB. Number of columns: %u, number of rows: %lu\n", num_Metrics, num_Epochs);
 
     if (mode == RANDOM_FILL) {
         fprintf(stdout,"Using random column indices to write, every write call is affected by uniform time noise\n");
@@ -238,22 +255,24 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
 
         if (j == 0) {
             for(i=0; i < num_Metrics; i++){
-                rv = tsdb_goto_epoch(&db_handler, cur_time - j*slot_duration, 0, 1);
+                rv = tsdb_goto_epoch(&db_handler, cur_time + j*slot_duration, 0, 1);
                 assert_int_equal(0,rv);
                 sprintf(metric,"metric-%u",i+1);
                 rv = tsdb_set(&db_handler,metric,&i);
                 assert_int_equal(0,rv);
             }
         } else {
+            if (epoch_to_miss[j]) continue;
             for (i=0; i < num_Metrics; i++){
+                transient_value = index[i]; //for type conversion
                 time_noise = rand()%(TIME_STEP - 1);
-                rv = tsdb_goto_epoch(&db_handler,cur_time - j*slot_duration + time_noise, 0, 1);
+                rv = tsdb_goto_epoch(&db_handler,cur_time + j*slot_duration + time_noise, 0, 1);
                 assert_int_equal(0,rv);
-                checkTime = cur_time - j*(time_t)slot_duration;
+                checkTime = cur_time + j*(time_t)slot_duration;
                 normalize_epoch(&db_handler,&checkTime);
                 assert_int_equal(db_handler.chunk.epoch, checkTime);
-                sprintf(metric,"metric-%u",index[i]+1);
-                rv = tsdb_set(&db_handler, metric, &index[i]);
+                sprintf(metric,"metric-%u", transient_value + 1);
+                rv = tsdb_set(&db_handler, metric, &transient_value);
                 assert_int_equal(0,rv);
             }
         }
@@ -261,11 +280,22 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
         ntp_gettime(&time_end);
         timeval_subtract(&diff,&time_start.time,&time_end.time);
         result += timeval2float(&diff);
-        fprintf(stdout,"Epoch written: %lu / %lu, for %.6f s\r", j+1, num_Epochs, timeval2float(&diff));
+        fprintf(stdout,"Epoch written (attempts): %lu / %lu, for %.6f s\r", j+1, num_Epochs, timeval2float(&diff));
         rv=fflush(stdout);
         assert_int_equal(0,rv);
     }
     fprintf(stdout,"\n");
+
+    /* Checking erroneous intention handling (going into non-existent past)*/
+    fprintf(stdout,"Testing wrong epoch numbers addressing...");
+    for (j = 1; j < NUM_EPOCHS - 1; ++j) {
+        if (!epoch_to_miss[j]) continue;
+        time_noise = rand()%(TIME_STEP - 1);
+        rv = tsdb_goto_epoch(&db_handler,cur_time + j*slot_duration + time_noise, 0, 1);
+        assert_int_equal(rv, -1);
+    }
+    fprintf(stdout," Done.\n");
+
 
     tsdb_flush(&db_handler);
     print_tsdb_info(&db_handler);
@@ -278,6 +308,7 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
     if (mode == RANDOM_FILL) {
         free(index);
     }
+    free(epoch_to_miss);
 }
 
 void query_and_profile_DB(set_container* settings, u_int32_t* index){

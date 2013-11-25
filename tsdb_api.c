@@ -20,6 +20,7 @@
 
 #include "tsdb_api.h"
 #include "tsdb_bitmap.h"
+#include "seatest.h"
 
 static void db_put(tsdb_handler *handler,
                    void *key, u_int32_t key_len,
@@ -127,6 +128,16 @@ int tsdb_open(const char *tsdb_path, tsdb_handler *handler,
         }
     }
 
+    if (db_get(handler, "epoch_list",
+               strlen("epoch_list"),
+               &value, &value_len) == 0) {
+        handler->epoch_list = (u_int32_t*) value;
+    } else {
+        if (!handler->read_only) {
+            handler->epoch_list = NULL;
+        }
+    }
+
     if (db_get(handler, "slot_duration",
                strlen("slot_duration"),
                &value, &value_len) == 0) {
@@ -198,17 +209,64 @@ int tsdb_open(const char *tsdb_path, tsdb_handler *handler,
     return 0;
 }
 
+void purge_chunk_with_fire(tsdb_handler *db_handler) {
+  if (db_handler->chunk.data != NULL) {
+      free(db_handler->chunk.data);
+  }
+  memset(&db_handler->chunk, 0, sizeof(db_handler->chunk));
+  db_handler->chunk.epoch = 0;
+  db_handler->chunk.data_len = 0;
+  db_handler->chunk.new_epoch_flag = 0;
+}
+
+static int epoch_list_add(tsdb_handler *handler, u_int32_t epoch) {
+  // reallocate memory and add put the epoch at the end
+  // counter of epochs is increased as well
+  u_int32_t *new_arr_p;
+  new_arr_p = (u_int32_t *) realloc(handler->epoch_list, (handler->number_of_epochs + 1) * sizeof(u_int32_t));
+  if (new_arr_p == NULL) {
+      return -1;
+  }
+  handler->number_of_epochs++;
+  handler->epoch_list = new_arr_p;
+  handler->epoch_list[handler->number_of_epochs - 1] = epoch;
+
+  return 0;
+}
+
 static void tsdb_flush_chunk(tsdb_handler *handler) {
     char *compressed;
     u_int compressed_len, new_len, num_fragments, i;
     u_int fragment_size;
-    char str[32];
+    char str[32], rv=0;
 
-    if (!handler->chunk.data) return;
+    if (!handler->chunk.data) {
+        purge_chunk_with_fire(handler);
+        return;
+    }
+
     if (handler->chunk.new_epoch_flag) {
-        handler->number_of_epochs ++;
-        db_put(handler, "num_epochs", strlen("num_epochs"), &handler->number_of_epochs, sizeof(handler->number_of_epochs));
-        if (handler->chunk.epoch > handler->most_recent_epoch) {
+
+        assert_true(handler->most_recent_epoch < handler->chunk.epoch);
+
+        rv = epoch_list_add(handler, handler->chunk.epoch);
+        if (rv) {
+            trace_error("Epoch %lu will not be written, failed to allocate memory. Current chunk will be purged. We keep working.",handler->chunk.epoch );
+            purge_chunk_with_fire(handler);
+            return;
+        }
+        //handler->number_of_epochs ++; | It was incremented by epoch_list_add(), if reallocation succeeded
+
+        db_put(handler, "epoch_list",
+            strlen("epoch_list"),
+            handler->epoch_list,
+            handler->number_of_epochs * sizeof(handler->chunk.epoch));
+        db_put(handler, "num_epochs",
+            strlen("num_epochs"),
+            &handler->number_of_epochs,
+            sizeof(handler->number_of_epochs));
+
+        if (handler->chunk.epoch > handler->most_recent_epoch) { //must always be true given assertion above
             handler->most_recent_epoch = handler->chunk.epoch;
             db_put(handler, "recent_epoch", strlen("recent_epoch"),
                    &handler->most_recent_epoch, sizeof(handler->most_recent_epoch));
@@ -268,6 +326,7 @@ void tsdb_close(tsdb_handler *handler) {
         trace_info("Flushing database changes...");
     }
 
+    free(handler->epoch_list);
     handler->db->close(handler->db, 0);
 
     handler->alive = 0;
@@ -314,8 +373,15 @@ int tsdb_goto_epoch(tsdb_handler *handler,
     u_int32_t value_len, fragment = 0;
     char str[32];
 
+    if (handler == NULL) {
+        trace_error("DB handler is NULL pointer");
+        return -1;
+    }
+
     normalize_epoch(handler, &epoch);
     if (handler->chunk.epoch == epoch) {
+        //by returning we effectively prevent extra disk writes (code
+        //does not reach the tsdb_flush_chunk() line)
         return 0;
     }
 
@@ -330,10 +396,19 @@ int tsdb_goto_epoch(tsdb_handler *handler,
         return -1;
     }
 
+    if (rc == -1 ) {
+        if (handler->most_recent_epoch > epoch) {
+            // intended epoch recored is in the past and does not exist
+            trace_warning("Attempt to access a non-existing epoch in the past. In the current implementation this is PROHIBITED, as it breaks program logic");
+            return -1;
+        }
+        // Having implemented the above condition, we make sure an every non-existent epoch we are about to write (thus creating it) is the most recent one and we don't change "the past"
+        handler->chunk.new_epoch_flag = 1;
+    }
+
     handler->chunk.epoch = epoch;
     handler->chunk.growable = growable;
     //handler->chunk.data = NULL is set after flushing
-    if (rc == -1 ) {handler->chunk.new_epoch_flag = 1;}
 
     if (rc == 0) {
         //ATTENTION! All fragments must exist consecutively, i.e., we cant have only fragments 3, 7 and 90
@@ -570,7 +645,7 @@ static int prepare_offset_by_key(tsdb_handler *handler, char *key,
 
 int tsdb_set_with_index(tsdb_handler *handler, char *key,
                         tsdb_value *value, u_int32_t *index) {
-    u_int32_t *chunk_ptr;
+    tsdb_value *chunk_ptr;
     u_int64_t offset;
     int rc, i;
     unsigned char just_created = 0;

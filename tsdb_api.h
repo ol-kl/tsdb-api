@@ -47,18 +47,19 @@ typedef struct {
     u_int32_t array_len;
 } tsdb_tag;
 
-typedef u_int32_t tsdb_value;
+typedef u_int64_t tsdb_value;
 
 typedef struct {
     u_int8_t alive;
     u_int8_t read_only;
     u_int16_t values_per_entry; //1,2,3... number of values to store per epoch per time-series
     u_int16_t values_len; //=values_per_entry * sizeof(tsdb_value)
-    u_int32_t unknown_value;
+    u_int32_t unknown_value; //default value in a DB's entries
     u_int32_t number_of_epochs;
     u_int32_t most_recent_epoch;
     u_int32_t lowest_free_index; //started with 0
     u_int32_t slot_duration;
+    u_int32_t *epoch_list;
     qlz_state_compress state_compress;
     qlz_state_decompress state_decompress;
     tsdb_chunk chunk;
@@ -89,7 +90,7 @@ extern int tsdb_goto_epoch(tsdb_handler *handler,
  * This function can be used to check existence of epochs
  * in the TSDB, but if an epoch exists it will be loaded
  * and decompressed automatically. To avoid the overhead
- *  one should use tsdb_epoch_exists(). */
+ * one should use tsdb_epoch_exists(). */
 
 extern int tsdb_epoch_exists(tsdb_handler *handler,
                     u_int32_t epoch);
