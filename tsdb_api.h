@@ -22,7 +22,7 @@
 #include <limits.h>
 #include <stdarg.h>
 #include <sys/stat.h>
-#include <db.h>
+#include <db.h> // Berkeley DB API
 #include <errno.h>
 
 #include "tsdb_trace.h"
@@ -49,6 +49,13 @@ typedef struct {
 
 typedef u_int64_t tsdb_value;
 
+typedef int (*cb_func_t)(void *internal_data, void *external_data);
+
+typedef struct {
+    cb_func_t cb;
+    void *external_data;
+} cb_bundle_t;
+
 typedef struct {
     u_int8_t alive;
     u_int8_t read_only;
@@ -64,6 +71,8 @@ typedef struct {
     qlz_state_decompress state_decompress;
     tsdb_chunk chunk;
     DB *db;
+    cb_bundle_t reportChunkDataCB;
+    cb_bundle_t reportNewMetricCB;
 } tsdb_handler;
 
 extern int  tsdb_open(const char *tsdb_path, tsdb_handler *handler,
@@ -100,7 +109,9 @@ extern int tsdb_epoch_exists(tsdb_handler *handler,
 extern int tsdb_set(tsdb_handler *handler, char *key, tsdb_value *value);
 
 extern int tsdb_set_with_index(tsdb_handler *handler, char *key,
-                               tsdb_value *value, u_int32_t *index);
+                               tsdb_value *value, u_int32_t *index); // Outdated function, dont use it
+
+extern int tsdb_set_by_index(tsdb_handler *handler, tsdb_value *value, u_int32_t *index);
 
 extern int tsdb_get_by_key(tsdb_handler *handler,
                            char *key,

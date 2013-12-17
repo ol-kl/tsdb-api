@@ -48,6 +48,21 @@ static void db_put(tsdb_handler *handler,
 static int db_get(tsdb_handler *handler,
                   void *key, u_int32_t key_len,
                   void **value, u_int32_t *value_len) {
+  /* DBT data;
+   * db->get() with default flags of data DBT structure
+   * set to 0 will allocate memory for the data internally and
+   * will return pointer to the first element in data.data.
+   * Size of allocated memory will be data.size.
+   * HOWEVER! Every subsequent call to this function will deallocate previously
+   * allocated area of memory to serve new "get" request. It means the pointer
+   * returned to a newly allocated memory area will be exactly the same as in the
+   * previous call. Thus if data from prev function call was copied shallowly, than it
+   * may be lost. Deep copy must be exercised. Alternatively flags in the
+   * DBT structure for the data can be changed, e.g.,
+   * data.flags = DB_DBT_REALLOC can be set.
+   * I could not find this behaviour description in the Berkeley DB docs,
+   * therefore it is important. */
+
     DBT key_data, data;
 
     memset(&key_data, 0, sizeof(key_data));
@@ -94,25 +109,27 @@ int tsdb_open(const char *tsdb_path, tsdb_handler *handler,
     memset(handler, 0, sizeof(tsdb_handler));
 
     handler->read_only = read_only;
+    mode = (read_only ? 00444 : 00664 );
 
     if ((ret = db_create(&handler->db, NULL, 0)) != 0) {
         trace_error("Error while creating DB handler [%s]", db_strerror(ret));
         return -1;
     }
 
-    mode = (read_only ? 00444 : 00664 );
+
 
     if ((ret = handler->db->open(handler->db,
                                  NULL,
                                  (const char*)tsdb_path,
                                  NULL,
                                  DB_BTREE,
-                                 (read_only ? 0 : DB_CREATE),
+                                 (read_only ? DB_RDONLY : DB_CREATE),
                                  mode)) != 0) {
         trace_error("Error while opening DB %s [%s][r/o=%u,mode=%o]",
                     tsdb_path, db_strerror(ret), read_only, mode);
         return -1;
     }
+
 
     if (db_get(handler, "lowest_free_index",
                strlen("lowest_free_index"),
@@ -131,7 +148,8 @@ int tsdb_open(const char *tsdb_path, tsdb_handler *handler,
     if (db_get(handler, "epoch_list",
                strlen("epoch_list"),
                &value, &value_len) == 0) {
-        handler->epoch_list = (u_int32_t*) value;
+        handler->epoch_list = (u_int32_t*) malloc(value_len);
+        memcpy(handler->epoch_list, value , value_len);
     } else {
         if (!handler->read_only) {
             handler->epoch_list = NULL;
@@ -266,7 +284,7 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
             &handler->number_of_epochs,
             sizeof(handler->number_of_epochs));
 
-        if (handler->chunk.epoch > handler->most_recent_epoch) { //must always be true given assertion above
+        if (handler->chunk.epoch > handler->most_recent_epoch) { //must always be true given the assertion above
             handler->most_recent_epoch = handler->chunk.epoch;
             db_put(handler, "recent_epoch", strlen("recent_epoch"),
                    &handler->most_recent_epoch, sizeof(handler->most_recent_epoch));
@@ -307,6 +325,14 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
     }
 
     free(compressed);
+    /* Invoke the callback (if any) to allow manipulation
+     * on the handler->chunk.data before emptying it  */
+    if (handler->reportChunkDataCB.cb != NULL && handler->reportChunkDataCB.external_data != NULL) {
+        if (handler->reportChunkDataCB.cb(handler, handler->reportChunkDataCB.external_data)) {
+            trace_warning("CallBack call failed, no or incorrect data will be written into consolidated TSDBs.");
+        }
+    }
+    /******/
     free(handler->chunk.data);
     memset(&handler->chunk, 0, sizeof(handler->chunk));
     handler->chunk.epoch = 0;
@@ -355,7 +381,7 @@ int tsdb_get_key_index(tsdb_handler *handler, char *key, u_int32_t *index) {
 static void set_key_index(tsdb_handler *handler, char *key, u_int32_t index) {
     char str[32];
 
-    snprintf(str, sizeof(str), "key-%s", key);
+    snprintf(str, sizeof(str), "key-%s", key); // strlen(key) <= 31 - 4 = 27
 
     db_put(handler, str, strlen(str), &index, sizeof(index));
 
@@ -491,6 +517,13 @@ static int ensure_key_index(tsdb_handler *handler, char *key,
 
     *index = handler->lowest_free_index++;
     set_key_index(handler, key, *index);
+    /* CallBack time! We report a new key discovery */
+    if (handler->reportNewMetricCB.cb != NULL && handler->reportNewMetricCB.external_data != NULL) {
+        if (handler->reportNewMetricCB.cb(key, handler->reportNewMetricCB.external_data)) {
+            trace_warning("CallBack call failed, consolidated TSDBs will have keys missing. Data loss in those DBs possible.");
+        }
+    }
+    /******/
 
     db_put(handler,
            "lowest_free_index", strlen("lowest_free_index"),
@@ -645,6 +678,7 @@ static int prepare_offset_by_key(tsdb_handler *handler, char *key,
 
 int tsdb_set_with_index(tsdb_handler *handler, char *key,
                         tsdb_value *value, u_int32_t *index) {
+  /* Obsolete and useless. Use tsdb_set_by_index instead. */
     tsdb_value *chunk_ptr;
     u_int64_t offset;
     int rc, i;
@@ -690,6 +724,60 @@ int tsdb_set_with_index(tsdb_handler *handler, char *key,
     }
 
     return rc;
+}
+
+int tsdb_set_by_index(tsdb_handler *handler, tsdb_value *value, u_int32_t *index) {
+
+  tsdb_value *chunk_ptr;
+  u_int64_t offset;
+  int rc, i;
+  unsigned char just_created = 0;
+
+  if (!handler->alive) {
+      return -1;
+  }
+
+  if (!handler->chunk.epoch) {
+      trace_error("Missing epoch");
+      return -2;
+  }
+
+  if (handler->chunk.data == NULL) {
+      just_created = 1;
+  }
+
+  //rc = prepare_offset_by_key(handler, key, &offset, 1);
+  if (*index >= handler->lowest_free_index) {
+      trace_error("Index %ld was not mapped yet to a key, hence we refuse setting by it. Use tsdb_set with provided key name instead to create mapping key-index automatically.",*index);
+      return -1;
+  }
+  rc = prepare_offset_by_index(handler, index, &offset, 1);
+  if (rc == 0) {
+      chunk_ptr = (tsdb_value*)(&handler->chunk.data[offset]);
+      memcpy(chunk_ptr, value, handler->values_len);
+
+      // Mark a fragment as changed
+      *index = offset / handler->values_len;
+      int fragment = *index / CHUNK_GROWTH;
+      if (fragment > MAX_NUM_FRAGMENTS - 1) {
+          trace_error("Internal error [%u > %u]",
+              fragment, MAX_NUM_FRAGMENTS);
+          if (just_created) {
+              free(handler->chunk.data);
+              handler->chunk.data = NULL;
+          }
+      } else {
+          handler->chunk.fragment_changed[fragment] = 1;
+          if (just_created) {
+              for (i = 0; i < fragment; ++i) {
+                  handler->chunk.fragment_changed[i] = 1;
+              }
+          }
+      }
+
+  }
+
+  return rc;
 }
 
 int tsdb_set(tsdb_handler *handler, char *key, tsdb_value *value) {

@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include <fcntl.h>
 
 typedef struct {
     char *DB_file_name;
@@ -23,13 +24,15 @@ typedef struct {
 } set_container;
 
 #define BYTE(X) ((unsigned char *)(X))
+#define PBYTE(X) ((unsigned char **)(X))
 #define DEFAULT_VALUE 1000000
-#define METRICS_NUM 62000
+#define METRICS_NUM 1000000
 #define STRING_MAX_LEN 20
 #define TIME_STEP 60 //seconds
 #define NUM_EPOCHS 60 //in time steps
 #define RANDOM_FILL 0
 #define CONTIGUOUS_FILL 1
+#define FNAME ".TSDB_test_conf.bin"
 
 static void help(int code) {
     printf("test-queryTime (-c DB_file_name | -q DB_file_name | -h ) [-s seed] \n");
@@ -45,7 +48,7 @@ static void help(int code) {
 
 static void process_args(int argc, char *argv[], set_container *settings) {
 
-  if (argc < 2 || argc > 5){
+  if (argc < 2 || argc > 7){
       help(1);
   }
 
@@ -141,11 +144,11 @@ void print_tsdb_info(tsdb_handler* handler) {
   fprintf(stdout,"num of rows: %d\n",handler->number_of_epochs);
   fprintf(stdout,"most recent epoch: %s\n",str);
   fprintf(stdout,"time step between rows: %d s\n",handler->slot_duration);
-  fprintf(stdout,"size of one element in TSDB: %d bytes\n",handler->values_len);
+  fprintf(stdout,"size of one value in TSDB: %d bytes\n",handler->values_len);
   fprintf(stdout,"=========== EPOCHS ============\n");
   for(i = 0; i< handler->number_of_epochs; ++i) {
       time2str(&(handler->epoch_list[i]), str, 30);
-      fprintf(stdout,"%5d: %s\n", i+1, str);
+      fprintf(stdout,"%5d: %s (%ld)\n", i+1, str, handler->epoch_list[i]);
   }
   fprintf(stdout,"===============================\n");
 }
@@ -194,6 +197,90 @@ void shuffle(void *obj, size_t nmemb, size_t size)
   free(temp);
 }
 
+int write_conf_file(void *buf, size_t buf_size) {
+  int conf_file;
+  ssize_t bytes_written = 0;
+
+  conf_file = open(FNAME, O_WRONLY | O_CREAT | O_FSYNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+  if (conf_file < 0) {
+      fprintf(stdout,"Failed to write DB configuration file .TSDB_test_conf.txt. Tests on the DB querying will fail.\n");
+      return -1;
+  }
+
+  while (buf_size != 0) {
+      bytes_written = write(conf_file, &(BYTE(buf)[bytes_written]), buf_size);
+      if (bytes_written < 0) {
+          fprintf(stdout,"Failed to write DB configuration file .TSDB_test_conf.txt. Tests on the DB querying will fail.\n");
+          return -1;
+      }
+      buf_size -= bytes_written;
+  }
+
+  if (close(conf_file) == -1) {
+      fprintf(stdout,"Failed to close DB configuration file .TSDB_test_conf.txt. Tests on the DB querying may fail.\n");
+      return -1;
+  }
+  return 0;
+}
+
+ssize_t read_conf_file(void **buf) {
+  extern char *program_invocation_short_name;
+  unsigned char *data;
+  int conf_file;
+  ssize_t bytes_read = 0, assumed_size = (NUM_EPOCHS ) * sizeof(u_int32_t);
+  size_t actual_size = 0;
+
+  data = BYTE(malloc(assumed_size + sizeof(u_int32_t))); // one extra element to check later for EOF
+
+  if (data == NULL) {
+      fprintf (stderr, "%s: Couldn't allocate memory to read config file\n",
+                                        program_invocation_short_name);
+      return -1;
+  }
+
+  conf_file = open(FNAME, O_RDONLY);
+
+  if (conf_file < 0) {
+      fprintf (stderr, "%s: Couldn't open conf file %s; %s\n",
+                                  program_invocation_short_name, FNAME, strerror (errno));
+      return -1;
+  }
+
+  do {
+      bytes_read = read(conf_file, &(data[actual_size]), assumed_size);
+      if (bytes_read < 0) {
+          fprintf (stderr, "%s: Couldn't read conf file %s; %s\n",
+                                      program_invocation_short_name, FNAME, strerror (errno));
+          free(data);
+          close(conf_file);
+          return -1;
+      }
+      actual_size += bytes_read;
+      assumed_size -= bytes_read;
+  } while (assumed_size != 0);  // 0 == EOF
+
+  // Check if the actual file size is larger than it should be
+  bytes_read = read(conf_file, &(data[actual_size]),  sizeof(u_int32_t)); // read next one element
+  if (bytes_read > 0) {
+      fprintf (stderr, "%s: Read DB configuration does not match the current build. Tests on the DB querying will fail.\n",
+                                  program_invocation_short_name);
+      free(data);
+      close(conf_file);
+      return -1;
+  }
+
+  if (close(conf_file) == -1) {
+      fprintf(stdout,"Failed to close DB configuration file .TSDB_test_conf.txt. Tests on the DB querying may fail.\n");
+      return -1;
+  }
+
+  * PBYTE(buf) = data;
+
+  //u_int32_t *test = (u_int32_t *)data;
+
+  return actual_size;
+}
+
 void populate_DB(set_container* settings, u_int32_t* index, int mode){
     extern char *program_invocation_short_name;
     tsdb_handler db_handler;
@@ -204,7 +291,7 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
     u_int8_t read_only = 0, time_noise = 0;
     u_int32_t cur_time = time(NULL), first_time = 0, checkTime;
     u_int32_t num_Epochs = NUM_EPOCHS; // number of Epochs in the TSDB (effectively rows, not taking into account splitting in chunks)
-    u_int32_t num_Metrics = METRICS_NUM, missed_epochs=0, j;
+    u_int32_t num_Metrics = METRICS_NUM, missed_epochs = 0, j;
     u_int32_t *epoch_to_miss;
     tsdb_value i, transient_value;
     struct ntptimeval time_start, time_end;
@@ -235,6 +322,8 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
                             program_invocation_short_name, settings->DB_file_name, strerror (errno));
         exit(-1);
     }
+
+    db_handler.unknown_value = 999;
 
     normalize_epoch(&db_handler,&cur_time);
     first_time += cur_time + TIME_STEP * (NUM_EPOCHS - 1);
@@ -303,11 +392,15 @@ void populate_DB(set_container* settings, u_int32_t* index, int mode){
     tsdb_close(&db_handler);
 
     fprintf(stdout,"DB was populated and flushed\n");
-    fprintf(stdout,"Avg time to write one row: %.6f s\n\n",result/num_Epochs);
+    fprintf(stdout,"Avg time to write one row: %.6f s\n\n",result/(num_Epochs - missed_epochs));
 
     if (mode == RANDOM_FILL) {
         free(index);
     }
+
+    /* Writing config file */
+    write_conf_file(epoch_to_miss, NUM_EPOCHS * sizeof(*epoch_to_miss));
+
     free(epoch_to_miss);
 }
 
@@ -315,14 +408,20 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
   extern char *program_invocation_short_name;
   tsdb_handler db_handler;
   int8_t rv;
-  u_int32_t j, i;
+  u_int32_t j, i, *epoch_to_miss = NULL;
+  ssize_t len;
   u_int16_t values_per_entry;
   float one_value_read=0, row_read=0;
   tsdb_value **interim_data, *returnedValue;
   struct ntptimeval time_start, time_end, time_start_long;
   struct timeval diff;
 
-  ntp_gettime(&time_start_long);
+  len = read_conf_file((void **)&epoch_to_miss); //len in bytes
+
+  if (len <= 0) {
+      exit(-1);
+  }
+
   //Though we dont need values_per_entry, but it must be provided to the function, otherwise segmentation_fault occurs
   if(tsdb_open(settings->DB_file_name,&db_handler,&values_per_entry,0,1)) {
       fprintf (stderr, "%s: Couldn't open file %s; %s\n",
@@ -333,14 +432,34 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
   interim_data = (tsdb_value**)malloc(sizeof(tsdb_value*));
   *interim_data = (tsdb_value*)malloc(db_handler.number_of_epochs*sizeof(tsdb_value));
 
+  /* Test consistency of epochs: */
+    /* 1. Correct epochs missed, calculations are correct */
+    for(j=0; j < NUM_EPOCHS; j++) {
+        rv = tsdb_goto_epoch(&db_handler, db_handler.most_recent_epoch - j*db_handler.slot_duration, 1, 0);
+        if (!epoch_to_miss[NUM_EPOCHS - 1 - j]) {
+            assert_int_equal(0,rv);
+        } else {
+            assert_int_equal(-1,rv);
+        }
+    }
+    /* 2. List of epochs is correct, all epochs exist and are available */
+    for(j=0; j < db_handler.number_of_epochs; j++) {
+        rv = tsdb_goto_epoch(&db_handler, db_handler.epoch_list[j], 1, 0);
+        assert_int_equal(0,rv);
+    }
+
+  /* Test performance of reading 1 column (with index METRICS_NUM/2) in the TSDB */
+  ntp_gettime(&time_start_long);
+
   for(j=0; j < db_handler.number_of_epochs; j++) {
-      rv = tsdb_goto_epoch(&db_handler, db_handler.most_recent_epoch - j*db_handler.slot_duration, 1, 0);
+      rv = tsdb_goto_epoch(&db_handler, db_handler.epoch_list[j], 1, 0);
       assert_int_equal(0,rv);
 
+      /* Let's check if the retrieved value is the one we have stored originally in the TSDB */
       rv=tsdb_get_by_index(&db_handler,&index[METRICS_NUM/2],&returnedValue);
       assert_int_equal(0,rv);
       (*interim_data)[j] = *returnedValue;
-      assert_int_equal(index[METRICS_NUM/2],(*interim_data)[j]); //checking if the retrieved value is the one we have stored previously
+      assert_int_equal(index[METRICS_NUM/2],(*interim_data)[j]);
   }
 
   ntp_gettime(&time_end);
@@ -351,9 +470,21 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
   timeval_subtract(&diff,&time_start_long.time,&time_end.time);
   fprintf(stdout,"We have read successfully 1 column in the TSDB. It took: %lu.%06lu s\n",diff.tv_sec,diff.tv_usec);
 
-  /*****************NEW TEST*******************/
-  //char metrics_to_query[METRICS_NUM][STRING_MAX_LEN];
+  /* Test performance of reading all columns in the TSDB */
+  /* Testing separately contiguous and random access reading within a row
+   * does not make much sense as the whole row gets loaded into memory,
+   * so the only performance limitation between these two cases will be
+   * accessing indices on different memory pages, which is negligible
+   * compared to HDD read time */
+
+  /* allocation on heap. */
   char **metrics_to_query;
+  /* If static allocation, as
+   * char metrics_to_query[METRICS_NUM][STRING_MAX_LEN];
+   * then being put on stack the array addressing
+   * will cause segmentation fault,
+   * given the array size big enough */
+
   metrics_to_query = (char**)malloc(METRICS_NUM*sizeof(char*));
   for(i=0;i<METRICS_NUM;++i){
       metrics_to_query[i] = (char*)malloc(STRING_MAX_LEN*sizeof(char));
@@ -363,8 +494,6 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
       assert_true(rv > 0);
   }
 
-
-    //Though we dont need values_per_entry, but it must be provided to the function, otherwise segmentation_fault occurs
   if(tsdb_open(settings->DB_file_name,&db_handler,&values_per_entry,0,1)) {
       fprintf (stderr, "%s: Couldn't open file %s; %s\n",
           program_invocation_short_name, settings->DB_file_name, strerror (errno));
@@ -380,9 +509,10 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
 
   ntp_gettime(&time_start_long);
   for(j=0; j < db_handler.number_of_epochs; j++) {
-      rv = tsdb_goto_epoch(&db_handler, db_handler.most_recent_epoch - j*db_handler.slot_duration, 1, 0);
+      rv = tsdb_goto_epoch(&db_handler, db_handler.epoch_list[j], 1, 0);
       assert_int_equal(0,rv);
 
+      /* Profiling time to read a one random value within a row */
       ntp_gettime(&time_start); i=rand()%METRICS_NUM;
       rv=tsdb_get_by_index(&db_handler,&index[i],&returnedValue);
                 assert_int_equal(0,rv);
@@ -391,8 +521,8 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
       ntp_gettime(&time_end);
       timeval_subtract(&diff,&time_start.time,&time_end.time);
       one_value_read += timeval2float(&diff);
-      //fprintf(stdout,"Time to read 1 random value from 1 epoch: %lu.%06lu s\n",diff.tv_sec,diff.tv_usec); fflush(stdout);
 
+      /* Profiling time to read a whole row */
       ntp_gettime(&time_start);
       for(i=0;i < METRICS_NUM; ++i){
           rv=tsdb_get_by_index(&db_handler,&index[i],&returnedValue);
@@ -417,6 +547,7 @@ void query_and_profile_DB(set_container* settings, u_int32_t* index){
       free(metrics_to_query[i]);
   }
   free(metrics_to_query);
+  free(epoch_to_miss);
   //free(index);
 
   timeval_subtract(&diff,&time_start.time,&time_start_long.time);
