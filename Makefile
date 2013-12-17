@@ -6,7 +6,7 @@ SYSLIBS      = -ldb
 TSDB_LIB     = libtsdb.a
 TSDB_LIB_O   = tsdb_api.o tsdb_trace.o tsdb_bitmap.o quicklz.o tsdb_wrapper_api.o tsdb_aux_tools.o
 
-TEST_LIBS    = $(TSDB_LIB) test_core.o seatest.o
+TEST_LIBS    = $(TSDB_LIB) seatest.o
 
 TARGETS      = $(TSDB_LIB) \
 				test-queryTime \

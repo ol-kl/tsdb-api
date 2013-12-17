@@ -31,8 +31,9 @@ static int _reportNewMetricCB(void *int_data, void *ext_data) {
   char **intermidiate_array;
   pointers_collection_t *cb_pointers = (pointers_collection_t*) ext_data;
   u_int32_t i;
-  size_t numElems = cb_pointers->rows[i]->new_metrics.num_of_entries;
+  size_t numElems;
   for (i = 0; i < cb_pointers->num_of_rows; ++i) {
+      numElems = cb_pointers->rows[i]->new_metrics.num_of_entries;
       /* Add a new key (metric) to every row */
       intermidiate_array = (char**) realloc(cb_pointers->rows[i]->new_metrics.list,
           (numElems + 1) * sizeof(char*) );
