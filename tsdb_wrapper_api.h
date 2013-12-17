@@ -79,7 +79,7 @@ int tsdbw_query(tsdbw_handle *db_set_h, // handle of all DBs, must be preallocat
                 time_t epoch_to,
                 const char **metrics,   // array of strings, which are names of metrics
                 u_int32_t metrics_num,  // number of metrics in "metrics" array
-                data_tuple_t **tuples,  // internally allocated and filled result array:[metrics_num][epochs_num]
+                data_tuple_t ***tuples,  // internally allocated and filled result array:[metrics_num][epochs_num]. Must be freed manually!
                 u_int32_t *epochs_num,  // number of epochs found within the window (epoch_from, epoch_to)
                 char granularity_flag); // the TSDB where search is to be done (fine, moderate, coarse)
 

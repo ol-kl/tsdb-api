@@ -92,7 +92,7 @@ static int _reportChunkDataCB(void *int_data, void *ext_data) {
 
   pointers_collection_t *rows_bundle = (pointers_collection_t*) ext_data;
 
-  tsdb_value *r_data = ((tsdb_handler *) int_data)->chunk.data; // reported data array
+  tsdb_value *r_data = (tsdb_value *) ((tsdb_handler *) int_data)->chunk.data; // reported data array
   tsdb_value *r_data_prepared = NULL;
   size_t tsdb_val_len = ((tsdb_handler *) int_data)->values_len; //size in bytes (i.e. chars)
   size_t r_data_size = ((tsdb_handler *) int_data)->chunk.data_len / tsdb_val_len;
@@ -684,6 +684,7 @@ int tsdbw_write(tsdbw_handle *db_set_h,
 
       time_diff = cur_time - db_set_h->cb_communication.rows[i]->last_flush_time;
       time_step = (time_t)db_set_h->db_hs[i]->slot_duration;
+      //TODO check the init case when db_set_h->cb_communication.rows[i]->data = NULL
 
       if (time_diff < 0) {
 
@@ -709,19 +710,135 @@ int tsdbw_write(tsdbw_handle *db_set_h,
 }
 
 static int get_list_of_epochs(tsdb_handler *db_h, u_int32_t epoch_from, u_int32_t epoch_to,
-                        u_int32_t **epochs_list, u_int32_t *epoch_num) {
+                        u_int32_t **epochs_list_p, u_int8_t **isEpochEmpty_p, u_int32_t *epoch_num) {
   /* The function searches epochs in interval provided by arguments
-   * in the given TSDB. A new sorted list of found and missing epochs gets
-   * written into epochs_list and number of entries gets set in epoch_num.
-   * Missing epochs are set to 0 in the list.  */
-//TODO
+   * in the given TSDB. A new sorted list (time ascending) of epochs
+   * in the range as well as list of missing epochs are
+   * written into epochs_list and isEpochEmpty arrays
+   * respectively. Number of epochs is set
+   * in epoch_num. */
+
+  if (epoch_from > epoch_to ) {
+      trace_error("Wrong epoch range");
+      return -1;
+  }
+
+  u_int32_t *epochs_list;
+  u_int8_t *isEpochEmpty;
+
+  normalize_epoch(db_h, &epoch_from);
+  normalize_epoch(db_h, &epoch_to);
+
+  if (epoch_from == epoch_to || epoch_from + db_h->slot_duration == epoch_to) {
+      /* One epoch */
+      epochs_list = (u_int32_t *) malloc(sizeof(u_int32_t));
+      isEpochEmpty = (u_int8_t *) malloc(sizeof(u_int8_t));
+      if (epochs_list == NULL || isEpochEmpty == NULL) return -1;
+      *epochs_list = epoch_to;
+      *isEpochEmpty = 0;
+      *epoch_num = 1;
+
+  } else {
+      /* All other cases */
+      u_int32_t i, j;
+      *epoch_num = epoch_from / epoch_to;
+      epochs_list = (u_int32_t *) malloc(sizeof(u_int32_t) * *epoch_num);
+      isEpochEmpty = (u_int8_t *) malloc(sizeof(u_int8_t) * *epoch_num);
+      if (epochs_list == NULL || isEpochEmpty == NULL) return -1;
+      for (i = 0, j = 0; i < *epoch_num; ++i) {
+          epochs_list[i] = epoch_from + i * db_h->slot_duration; //TODO check epochs_list[*epoch_num - 1] == epoch_to
+          if (epochs_list[i] < db_h->epoch_list[0] ||
+              epochs_list[i] > db_h->most_recent_epoch ||
+              epochs_list[i] < db_h->epoch_list[j]) {
+              isEpochEmpty[i] = 1;
+          } else {
+              isEpochEmpty[i] = 0;
+              j++;
+          }
+      }
+      //TODO check j == db_h->number_of_epochs
+  }
+
+  *epochs_list_p = epochs_list;
+  *isEpochEmpty_p = isEpochEmpty;
+
   return 0;
 }
 
-static int check_args_query(tsdb_handler *tsdb_h, u_int32_t epoch_from,
-      u_int32_t epoch_to,  const char **metrics, u_int32_t metrics_num ) {
+static int check_args_query(tsdb_handler *tsdb_h, time_t *epoch_from,
+    time_t *epoch_to,  const char **metrics, u_int32_t metrics_num, data_tuple_t ***tuples ) {
 
-  //TODO
+  int i;
+
+  if (tsdb_h == NULL) {
+      trace_error("TSDB handle not allocated");
+      return -1;
+  }
+
+  if (epoch_from == NULL || epoch_to == NULL ) {
+      trace_error("Null epoch pointers");
+      return -1;
+  }
+
+  if (*epoch_from > *epoch_to) {
+      trace_error("Wrong epoch range");
+      return -1;
+  }
+
+  if (*epoch_to > (u_int32_t) time(NULL)) {
+      trace_info("Epoch range exceeds the current time. The upper bound was set to the current time.");
+      *epoch_to = (u_int32_t) time(NULL);
+  }
+
+  if (metrics == NULL) {
+      trace_error("Argument for an array of metrics is NULL pointer");
+      return -1;
+  }
+
+  for (i = 0; i < metrics_num; ++i) {
+      if (strlen(metrics[i]) > MAX_METRIC_STRING_LEN) {
+          trace_error("The metric %s exceeds max allowed string length of %u bytes", metrics[i], MAX_METRIC_STRING_LEN);
+          return -1;
+      }
+  }
+
+  if (tuples == NULL) {
+      trace_error("Argument for an address of an array of query results is NULL pointer");
+      return -1;
+  }
+
+  return 0;
+
+}
+
+static int tsdbw_query_alloc_result_array(data_tuple_t ***tuples,
+    u_int32_t metrics_num,
+    u_int32_t epoch_num) {
+
+  data_tuple_t **query_res = *tuples;
+  u_int32_t metr_idx;
+
+  /* Outer allocation */
+  query_res = (data_tuple_t **) calloc(metrics_num, sizeof(data_tuple_t *));
+
+  if (query_res == NULL) {
+      trace_error("Failed to allocate memory");
+      return -1;
+  }
+
+  /* Inner allocation */
+  for (metr_idx = 0; metr_idx < metrics_num; ++metr_idx) {
+      query_res[metr_idx] = (data_tuple_t *) calloc(epoch_num, sizeof(data_tuple_t));
+      if (query_res[metr_idx] == NULL) {
+          u_int32_t i;
+          for (i = 0; i < metr_idx; ++i) {
+              free(query_res[i]);
+          }
+          free(query_res);
+          trace_error("Failed to allocate memory");
+          return -1;
+      }
+  }
   return 0;
 }
 
@@ -730,11 +847,16 @@ int tsdbw_query(tsdbw_handle *db_set_h,
                 time_t epoch_to,
                 const char **metrics,
                 u_int32_t metrics_num,
-                data_tuple_t **tuples,
-                u_int32_t *epochs_num,
+                data_tuple_t ***tuples, // ==  &tuples[metrics_num][*epochs_num] internally
+                u_int32_t *epochs_num_res,
                 char granularity_flag) {
 
   tsdb_handler *tsdb_h;
+
+  if (metrics_num == 0) {
+      *epochs_num_res = 0;
+      return 0;
+  }
 
   switch(granularity_flag) {
   case TSDBW_FINE_TIMESTAMP:
@@ -750,13 +872,62 @@ int tsdbw_query(tsdbw_handle *db_set_h,
     return -1;
   }
 
-  if (check_args_query(tsdb_h, epoch_from, epoch_to, metrics, metrics_num )) return -1;
+  if (check_args_query(tsdb_h, &epoch_from, &epoch_to, metrics, metrics_num, tuples )) return -1;
 
   u_int32_t *epochs_list = NULL, epoch_num = 0;
-  get_list_of_epochs(tsdb_h, epoch_from, epoch_to, &epochs_list, &epoch_num);
+  u_int8_t *isEpochEmpty = NULL;
+  if (get_list_of_epochs(tsdb_h, epoch_from, epoch_to, &epochs_list, &isEpochEmpty, &epoch_num)) return -1;
 
-  /* Invoke tsdb_get() for every non zero epoch, for every metric */
-  //TODO
+  /* Allocate memory for the array of the query results */
+  if (tsdbw_query_alloc_result_array(tuples, metrics_num, epoch_num) ) { //TODO free tuples externally (Inner allocation, then Outer)
+      free(epochs_list);
+      free(isEpochEmpty);
+      return -1;
+  }
+  /* Filling the query result array - for every metric, every epoch in the requested range */
+  data_tuple_t **query_res = *tuples;
+  tsdb_value *val = NULL;
+  u_int8_t fail_if_epoch_missing = 1, allowed_to_grow_epochs = 0;
+  u_int32_t metr_idx, epch_idx;
+  char epoch_descr[20];
+
+  for (epch_idx = 0; epch_idx < epoch_num; ++epch_idx){
+      for (metr_idx = 0; metr_idx < metrics_num; ++metr_idx) {
+
+          query_res[metr_idx][epch_idx].epoch = (time_t) epochs_list[epch_idx];
+
+          if (isEpochEmpty[epch_idx] == 0) {
+              /* If Epoch is not empty and exists: */
+              if (tsdb_goto_epoch(tsdb_h, epochs_list[epch_idx], fail_if_epoch_missing, allowed_to_grow_epochs)) {
+                  /* If we have failed to load this epoch, we treat it as empty one for all metrics: */
+                  trace_error("Epoch was not found, though it must exist. Treating it like empty one.");
+                  isEpochEmpty[epch_idx] = 1;
+                  query_res[metr_idx][epch_idx].value = tsdb_h->unknown_value;
+                  continue;
+              }
+
+              /* The epoch exists and we have loaded it */
+
+              if (tsdb_get_by_key(tsdb_h, metrics[metr_idx], &val )) {
+                  /* The value for the given metric and epoch does not exist */
+                  time2str(&epochs_list[epch_idx], epoch_descr, 20);
+                  trace_info("No value found. Epoch %s, metric %s", epoch_descr, metrics[metr_idx]);
+                  query_res[metr_idx][epch_idx].value = tsdb_h->unknown_value;
+              } else {
+                  /* The value for the given metric and epoch does exist, but it
+                   * might be either a SNMP provided value or default unknown one */
+                  query_res[metr_idx][epch_idx].value = *((int64_t*) val);
+              }
+          } else {
+              /* If Epoch does not exist: */
+              query_res[metr_idx][epch_idx].value = tsdb_h->unknown_value;
+          }
+      }
+  }
+
+  *epochs_num_res = epoch_num;
+  free(epochs_list);
+  free(isEpochEmpty);
 
   return 0;
 }
