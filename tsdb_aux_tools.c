@@ -2,7 +2,7 @@
  * tsdb_aux_tools.c
  *
  *  Created on: Dec 5, 2013
- *      Author: admin
+ *      Author(s): Oleg Klyudt
  */
 
 #include "tsdb_aux_tools.h"

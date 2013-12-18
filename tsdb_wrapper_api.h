@@ -26,8 +26,8 @@
 
 #define MAX_PATH_STRING_LEN 200
 #define TSDBW_DB_NUM 3
-#define TSDBW_MM 5              // medium DB time step multiplier
-#define TSDBW_CM 60             // coarse DB time step multiplier
+#define TSDBW_MM 2              // medium DB time step multiplier
+#define TSDBW_CM 2.5             // coarse DB time step multiplier
 #define MAX_METRIC_STRING_LEN 27 // see set_key_index() in tsdb_api.c for details on why
 #define TSDBW_UNKNOWN_VALUE 0
 

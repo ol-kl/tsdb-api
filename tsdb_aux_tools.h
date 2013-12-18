@@ -2,7 +2,7 @@
  * tsdb_aux_tools.h
  *
  *  Created on: Dec 5, 2013
- *      Author: Oleg Klyudt
+ *      Author(s): Oleg Klyudt
  */
 
 #include <errno.h>

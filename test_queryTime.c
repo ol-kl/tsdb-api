@@ -2,9 +2,14 @@
  * test_queryTime.c
  *
  *  Created on: Nov 12, 2013
- *      Author: Oleg Klyudt
+ *      Author(s): Oleg Klyudt
  *
- * To compile this file, one needs libdb-dev and librrd-dev packages installed.
+ * This routine serves two purposes:
+ * 1. Unit testing of basic TSDB API
+ * 2. Profiling writing/reading time, thus assessing performance
+ * Profiling is accurate up to delays introduced by assessment routines due to the 1. clause
+ *
+ * To compile this file, one needs the libdb-dev package installed.
  */
 
 #include "tsdb_api.h"
