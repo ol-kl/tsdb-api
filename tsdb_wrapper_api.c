@@ -5,6 +5,13 @@
      Author(s): Oleg Klyudt
  */
 
+/* Things to implement optionally:
+ * 1. Create a local variant of errno, a structure which will report an error type and provide extra info. So that unified error handling can be implemented.
+ * 2. Consolidation function should be triggered on a schedule base, not by write requests as of now, as there can be no write requests at all during outage. Implement it as a separate process / thread.
+ * 3. Support of values_per_entry > 1 by local functions. Some of them support it already. This however will require implementation of arithmetic for long types (more than int64_t).
+ * 4. Syslogging / custom logging to file of all tracing info instead of stdout.
+ * */
+
 #include "tsdb_wrapper_api.h"
 
 #define lambda(l_ret_type, l_arguments, l_body)         \
@@ -545,7 +552,7 @@ void tsdbw_close(tsdbw_handle *handle) {
 
 }
 
-static int check_args_write(tsdbw_handle *db_set_h, const char **metrics, const int64_t *values, u_int32_t num_elem) {
+static int check_args_write(tsdbw_handle *db_set_h, char **metrics, const int64_t *values, u_int32_t num_elem) {
 
   int i;
 
@@ -594,7 +601,7 @@ static int check_args_write(tsdbw_handle *db_set_h, const char **metrics, const 
 
 static int fine_tsdb_update(tsdbw_handle *db_set_h,
     /* This function does not support currently values_per_entry > 1*/
-    const char **metrics,
+    char **metrics,
     const int64_t *values,
     u_int32_t num_elem) {
 
@@ -611,7 +618,7 @@ static int fine_tsdb_update(tsdbw_handle *db_set_h,
   rv = lambda(int,
           (tsdb_value *buf,
           tsdbw_handle *db_set_h,
-          const char **metrics,
+          char **metrics,
           const int64_t *values,
           u_int32_t num_elem),
           {
@@ -677,7 +684,7 @@ static int fine_tsdb_update(tsdbw_handle *db_set_h,
 
 
 int tsdbw_write(tsdbw_handle *db_set_h,
-                const char **metrics,
+                char **metrics,
                 const int64_t *values,
                 u_int32_t num_elem) {
 
@@ -778,7 +785,7 @@ static int get_list_of_epochs(tsdb_handler *db_h, u_int32_t epoch_from, u_int32_
 }
 
 static int check_args_query(tsdb_handler *tsdb_h, time_t *epoch_from,
-    time_t *epoch_to,  const char **metrics, u_int32_t metrics_num, data_tuple_t ***tuples ) {
+    time_t *epoch_to,  char **metrics, u_int32_t metrics_num, data_tuple_t ***tuples ) {
 
   int i;
 
@@ -854,50 +861,51 @@ static int tsdbw_query_alloc_result_array(data_tuple_t ***tuples,
   return 0;
 }
 
-int tsdbw_query(tsdbw_handle *db_set_h,
-                time_t epoch_from,
-                time_t epoch_to,
-                const char **metrics,
-                u_int32_t metrics_num,
-                data_tuple_t ***tuples, // ==  &tuples[metrics_num][*epochs_num] internally
-                u_int32_t *epochs_num_res,
-                char granularity_flag) {
+int tsdbw_query(tsdbw_handle *db_set_h, q_request_t *req, q_reply_t *rep) {
+
+  /* Unpacking request*/
+  time_t epoch_from =  req->epoch_from;
+  time_t epoch_to = req->epoch_to;
+  char **metrics = req->metrics;
+  u_int32_t metrics_num = req->metrics_num;
+  char granularity_flag = req->granularity_flag;
 
   tsdb_handler *tsdb_h;
 
   if (metrics_num == 0) {
-      *epochs_num_res = 0;
+      rep->epochs_num_res = 0;
+      rep->tuples = NULL;
       return 0;
   }
 
   switch(granularity_flag) {
-  case TSDBW_FINE_TIMESTAMP:
-    tsdb_h = db_set_h->db_hs[TSDBW_FINE_TIMESTAMP];
+  case TSDBW_FINE:
+    tsdb_h = db_set_h->db_hs[TSDBW_FINE];
     break;
-  case TSDBW_MODERATE_TIMESTAMP:
-    tsdb_h = db_set_h->db_hs[TSDBW_MODERATE_TIMESTAMP];
+  case TSDBW_MODERATE:
+    tsdb_h = db_set_h->db_hs[TSDBW_MODERATE];
     break;
-  case TSDBW_COARSE_TIMESTAMP:
-    tsdb_h = db_set_h->db_hs[TSDBW_COARSE_TIMESTAMP];
+  case TSDBW_COARSE:
+    tsdb_h = db_set_h->db_hs[TSDBW_COARSE];
     break;
   default:
     return -1;
   }
 
-  if (check_args_query(tsdb_h, &epoch_from, &epoch_to, metrics, metrics_num, tuples )) return -1;
+  if (check_args_query(tsdb_h, &epoch_from, &epoch_to, metrics, metrics_num, &rep->tuples )) return -1;
 
   u_int32_t *epochs_list = NULL, epoch_num = 0;
   u_int8_t *isEpochEmpty = NULL;
   if (get_list_of_epochs(tsdb_h, epoch_from, epoch_to, &epochs_list, &isEpochEmpty, &epoch_num)) return -1;
 
   /* Allocate memory for the array of the query results */
-  if (tsdbw_query_alloc_result_array(tuples, metrics_num, epoch_num) ) { //TODO free tuples externally (Inner allocation, then Outer)
+  if (tsdbw_query_alloc_result_array(&rep->tuples, metrics_num, epoch_num) ) { //TODO free tuples externally (Inner allocation, then Outer)
       free(epochs_list);
       free(isEpochEmpty);
       return -1;
   }
   /* Filling the query result array - for every metric, every epoch in the requested range */
-  data_tuple_t **query_res = *tuples;
+  data_tuple_t **query_res = rep->tuples;
   tsdb_value *val = NULL;
   u_int8_t fail_if_epoch_missing = 1, allowed_to_grow_epochs = 0;
   u_int32_t metr_idx, epch_idx;
@@ -921,9 +929,9 @@ int tsdbw_query(tsdbw_handle *db_set_h,
               /* The epoch exists and we have loaded it */
 
               if (tsdb_get_by_key(tsdb_h, metrics[metr_idx], &val )) {
-                  /* The value for the given metric and epoch does not exist */
+                  /* The value for the given metric and epoch does not exist, or the key is missing */
                   time2str(&epochs_list[epch_idx], epoch_descr, 20);
-                  trace_info("No value found. Epoch %s, metric %s", epoch_descr, metrics[metr_idx]);
+                  trace_info("No value or metric found. Epoch %s, metric %s", epoch_descr, metrics[metr_idx]);
                   query_res[metr_idx][epch_idx].value = tsdb_h->unknown_value;
               } else {
                   /* The value for the given metric and epoch does exist, but it
@@ -937,7 +945,7 @@ int tsdbw_query(tsdbw_handle *db_set_h,
       }
   }
 
-  *epochs_num_res = epoch_num;
+  rep->epochs_num_res = epoch_num;
   free(epochs_list);
   free(isEpochEmpty);
 

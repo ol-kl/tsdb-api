@@ -26,14 +26,14 @@
 
 #define MAX_PATH_STRING_LEN 200
 #define TSDBW_DB_NUM 3
-#define TSDBW_MM 2              // medium DB time step multiplier
+#define TSDBW_MM 2               // medium DB time step multiplier
 #define TSDBW_CM 2.5             // coarse DB time step multiplier
 #define MAX_METRIC_STRING_LEN 27 // see set_key_index() in tsdb_api.c for details on why
 #define TSDBW_UNKNOWN_VALUE 0
 
-#define TSDBW_FINE_TIMESTAMP 0
-#define TSDBW_MODERATE_TIMESTAMP 1
-#define TSDBW_COARSE_TIMESTAMP 2
+#define TSDBW_FINE 0
+#define TSDBW_MODERATE 1
+#define TSDBW_COARSE 2
 
 #define TSDBW_MODE_READ 3
 #define TSDBW_MODE_WRITE 4
@@ -74,18 +74,26 @@ typedef struct {
   pointers_collection_t cb_communication;
 } tsdbw_handle;
 
+typedef struct {
+  data_tuple_t **tuples;       // internally allocated and filled result array:[metrics_num][epochs_num]. Must be freed manually!
+  u_int32_t epochs_num_res;    // number of epochs found within the window (epoch_from, epoch_to)
+} q_reply_t;
+
+typedef struct {
+  time_t epoch_from;
+  time_t epoch_to;
+  char **metrics;         // array of strings, which are names of metrics
+  u_int32_t metrics_num;        // number of metrics in "metrics" array
+  char granularity_flag;        // the TSDB where search is to be done (fine, moderate, coarse)
+} q_request_t;
+
 int tsdbw_query(tsdbw_handle *db_set_h, // handle of all DBs, must be preallocated
-                time_t epoch_from,
-                time_t epoch_to,
-                const char **metrics,   // array of strings, which are names of metrics
-                u_int32_t metrics_num,  // number of metrics in "metrics" array
-                data_tuple_t ***tuples,  // internally allocated and filled result array:[metrics_num][epochs_num]. Must be freed manually!
-                u_int32_t *epochs_num,  // number of epochs found within the window (epoch_from, epoch_to)
-                char granularity_flag); // the TSDB where search is to be done (fine, moderate, coarse)
+                q_request_t *req,
+                q_reply_t *rep);
 
 
 int tsdbw_write(tsdbw_handle *db_set_h,      // handle of all DBs, must be preallocated
-                const char **metrics,        // array of strings, which are names of metrics, length num_elem
+                char **metrics,        // array of strings, which are names of metrics, length num_elem
                 const int64_t *values,       // array of values for the metrics, length num_elem
                 u_int32_t num_elem);         // number of metrics and respective values to write into TSDB
 

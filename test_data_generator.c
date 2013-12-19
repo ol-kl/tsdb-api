@@ -22,6 +22,42 @@
 
 #define TSDB_DG_METRIC_NUM 6
 #define TSDB_DG_EPOCHS_NUM 20
+#define TSDB_DG_FINE_TS 2
+
+int metrics_create(char ***metrics_arr) {
+
+  char **metrics = *metrics_arr;
+  u_int32_t cnt, rcnt;
+
+  /* Outer allocation */
+  metrics = (char **) malloc(TSDB_DG_METRIC_NUM * sizeof(char *));
+  if (metrics == NULL) return -1;
+
+  /* Inner allocation */
+  for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) {
+      metrics[cnt] = (char *) malloc(MAX_METRIC_STRING_LEN * sizeof(char));
+      if (metrics[cnt] == NULL) goto err_cleanup;
+      if (sprintf(metrics[cnt], "m-%lu", cnt +1) < 0) goto err_cleanup;
+  }
+
+  return 0;
+
+  err_cleanup:
+  for (rcnt = 0; rcnt < cnt; ++rcnt) {
+      free(metrics[rcnt]);
+  }
+  free(metrics);
+  metrics = NULL;
+  return -1;
+}
+
+void metrics_destroy(char ***metrics_arr) {
+  char **metrics = *metrics_arr;
+  u_int32_t cnt;
+  for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) free(metrics[cnt]);
+  free(metrics);
+  metrics = NULL;
+}
 
 int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoch_idx, u_int8_t metr_num, u_int8_t garbage_flag) {
 
@@ -32,13 +68,7 @@ int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoc
 
   vals_to_write = (int64_t *) calloc(metr_num, sizeof(int64_t));
 
-  metrics = (char **) malloc(metr_num * sizeof(char *));
-  if (metrics == NULL) return -1;
-
-  for (cnt = 0; cnt < metr_num; ++cnt) {
-      metrics[cnt] = (char *) malloc(20 * sizeof(char));
-      if (metrics[cnt] == NULL ) return -1;
-  }
+  if (metrics_create(&metrics)) {return -1; }
 
   for (cnt = 0; cnt < metr_num; ++cnt) {
       vals_to_write[num_of_values] = values[cnt][epoch_idx];
@@ -52,8 +82,7 @@ int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoc
   rv = tsdbw_write(db_bundle, metrics, vals_to_write, num_of_values);
   assert_true(rv == 0);
 
-  for (cnt = 0; cnt < metr_num; ++cnt) free(metrics[cnt]);
-  free(metrics);
+  metrics_destroy(&metrics);
 
   return 0;
 }
@@ -73,8 +102,8 @@ int create_pattern(int64_t ***values_p) {
   }
 
   /* Creating a writing template, 0 - no value to write */
-  for (i = 1; i < TSDB_DG_METRIC_NUM + 1; ++i) { //epochs
-      for (j = 1; j < i + 1; ++j ) { //metrics
+  for (i = 1; i < TSDB_DG_METRIC_NUM + 1; ++i) { //epochs i = 1:6
+      for (j = 1; j < i + 1; ++j ) { //metrics            j = 1:1, 1:2, ..., 1:6
           values[j-1][i-1] = 10 * j;
       }
   }
@@ -147,14 +176,62 @@ int epochs_alligned(tsdbw_handle *db_bundle) {
   return i == 0; // if all elements of an array are equal, i hits 0 and the routine returns true
 }
 
-void emulate_outage() {
-//TODO
+u_int32_t emulate_outage(u_int32_t *time) {
+
+  unsigned int time_uint = *time;
+
+  u_int32_t time_left = sleep(time_uint);
+  if (time_left){
+      printf("Sleep phase was not finished. %u seconds left. Aborting\n", time_left);
+      fflush(stdout);
+  }
+  return time_left;
 }
+
+int open_dbs(tsdbw_handle *db_bundle, const char **db_paths, char mode) {
+  u_int16_t timestep = TSDB_DG_FINE_TS;
+  if (!tsdbw_init(db_bundle, &timestep, db_paths, mode)) {
+      printf("DBs are open!\n");
+      return 0;
+    }
+  else {
+      printf("Failed to open DBs\n"); return -1;
+  }
+}
+
+int prepare_args_q_test1(tsdbw_handle *db_bundle, q_request_t *req) {
+
+  req->granularity_flag = TSDBW_FINE;
+  req->epoch_from = db_bundle->db_hs[0]->epoch_list[0] - db_bundle->db_hs[0]->slot_duration * 1.5;
+  req->epoch_to = db_bundle->db_hs[0]->epoch_list[db_bundle->db_hs[0]->number_of_epochs] + db_bundle->db_hs[0]->slot_duration * 1.5;
+  req->metrics_num = TSDB_DG_METRIC_NUM;
+
+  char **metrics;
+  if (metrics_create(&metrics) ) return -1;
+  req->metrics = metrics;
+
+  return 0;
+}
+
+int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *s_time) {
+
+  /* form list of anticipated epochs */
+
+  /* 2 from extra requested range: 1 epoch
+   * before the first existing in the DB
+   * and one epoch after the last existing
+   * in the DB */
+  u_int32_t num_epochs = (h->epoch_list[h->most_recent_epoch] - h->epoch_list[0]) / h->slot_duration +1 + 2;
+  /* form 2D array (metrics, epochs) of anticipated data*/
+  /* compare returned tuples with anticipated data in a loop across all epochs and metrics */
+
+  return 0;
+}
+
 
 int main() {
 
   tsdbw_handle db_bundle;
-  u_int16_t basic_timestep = 2;
   u_int32_t sleep_time;
   u_int8_t i;
   int64_t **values = NULL;
@@ -166,16 +243,12 @@ int main() {
 
   set_trace_level(99);
 
-  /* Create test pattern */
+  /* Create test pattern of events */
   rv = create_pattern(&values); assert_true(rv == 0);
 
   /* Open DBs */
-  if (!tsdbw_init(&db_bundle, &basic_timestep, db_paths, 'w')) {
-      printf("DBs are open!\n");
-    }
-  else {
-      printf("Failed to open DBs\n"); return -1;
-  }
+  rv = open_dbs(&db_bundle, db_paths, 'w'); assert_true(rv == 0);
+
   sleep_time = 2 * db_bundle.db_hs[2]->slot_duration; // 2 epochs of the coarse TSDB
 
   /* Writing epochs according to pattern once epochs in all TSDBs are aligned */
@@ -185,28 +258,31 @@ int main() {
   tsdbw_close(&db_bundle);
 
   /* Emulate outage time for DB */
-  emulate_outage(& sleep_time);
+  rv = emulate_outage(& sleep_time); assert_true(rv == 0);
 
   /* Open DBs in append mode this time*/
-  if (!tsdbw_init(&db_bundle, &basic_timestep, db_paths, 'a')) {
-      printf("DBs are open!\n");
-    }
-  else {
-      printf("Failed to open DBs\n"); return -1;
-  }
+  rv = open_dbs(&db_bundle, db_paths, 'a'); assert_true(rv == 0);
 
   /* Commence writing duty cycle */
   rv = writing_cycle_engage(&db_bundle, values); assert_true(rv == 0);
   tsdbw_close(&db_bundle);
 
   /* Reading TSDBs */
-  /* 1. Read whole fine TSDB (with extra range) and check correctness of data */
+  rv = open_dbs(&db_bundle, db_paths, 'r'); assert_true(rv == 0);
+
+  /* 1 Read whole fine TSDB (with extra range) and check correctness of data */
+  q_request_t req;
+  q_reply_t rep;
+  rv = prepare_args_q_test1(&db_bundle, &req); assert_true(rv == 0);
+  rv = tsdbw_query(&db_bundle, &req, &rep); assert_true(rv == 0);
+  rv = verify_reply_test1(db_bundle.db_hs[0], &rep, &sleep_time); assert_true(rv == 0);
+
   /* 2. Read whole moderate TSDB (with extra range) and check correctness of consolidated data */
   /* 3. Read whole coarse TSDB (with extra range) and check correctness of consolidated data */
   /* Testing querying of epoch ranges using times encompassing them: */
-  /* 4. Fine TSDB: query and check 2-5 and 19-51  */
-  /* 5. Fine TSDB: query and check 1-4 and 10-16  */
-  /* 6. Fine TSDB: query and check 2-3 and 7 (time within this epoch)  */
+  /* 4. Fine TSDB: randomly read epoch ranges/metrics and check correctness  */
+  /* 5. Moderate TSDB: randomly read epoch ranges/metrics and check correctness  */
+  /* 6. Coarse TSDB: randomly read epoch ranges/metrics and check correctness  */
 
 
   for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) free(values[i]);

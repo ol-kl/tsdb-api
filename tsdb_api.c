@@ -517,6 +517,7 @@ static int ensure_key_index(tsdb_handler *handler, char *key,
 
     *index = handler->lowest_free_index++;
     set_key_index(handler, key, *index);
+
     /* CallBack time! We report a new key discovery */
     if (handler->reportNewMetricCB.cb != NULL && handler->reportNewMetricCB.external_data != NULL) {
         if (handler->reportNewMetricCB.cb(key, handler->reportNewMetricCB.external_data)) {
