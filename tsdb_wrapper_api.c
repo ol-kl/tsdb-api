@@ -29,26 +29,31 @@ static int _reportNewMetricCB(void *int_data, void *ext_data) {
   if (int_data == NULL || ext_data == NULL) {
       return -1;
   }
-  /* Make a deep copy of the key to make it persistent*/
-  char *key = malloc(strlen((char *)int_data) + 1); // +1 to incorporate /0 character
-  if (key == NULL) return -1;
-  memcpy(key, (char *)int_data, strlen((char *)int_data) + 1);
+  /* Make a deep copy of the key for every accumulation buffer to make it persistent */
+  pointers_collection_t *cb_pointers = (pointers_collection_t*) ext_data;
+  size_t mtr_size = strlen((char *)int_data) + 1; // +1 to incorporate /0 character
+  char *key_m = (char *) malloc( mtr_size ); if (key_m == NULL ) return -1;
+  char *key_c = (char *) malloc( mtr_size ); if (key_c == NULL ) return -1;
+
+  memcpy(key_m, (char *)int_data, mtr_size);
+  memcpy(key_c, (char *)int_data, mtr_size);
 
   /* Add the key to the list of metrics with reallocation of the latter */
-  char **intermidiate_array;
-  pointers_collection_t *cb_pointers = (pointers_collection_t*) ext_data;
+  char **intermediate_array;
+
   u_int32_t i;
   size_t numElems;
   for (i = 0; i < cb_pointers->num_of_rows; ++i) {
       numElems = cb_pointers->rows[i]->new_metrics.num_of_entries;
+
       /* Add a new key (metric) to every row */
-      intermidiate_array = (char**) realloc(cb_pointers->rows[i]->new_metrics.list,
+      intermediate_array = (char**) realloc(cb_pointers->rows[i]->new_metrics.list,
           (numElems + 1) * sizeof(char*) );
-      if (intermidiate_array == NULL) return -1;
-      intermidiate_array[numElems] = key;
-      cb_pointers->rows[i]->new_metrics.list = intermidiate_array;
+      if (intermediate_array == NULL) {free(key_m); free(key_c); return -1;}
+      intermediate_array[numElems] = (i == TSDBW_MODERATE - 1) ? key_m : key_c;
+      cb_pointers->rows[i]->new_metrics.list = intermediate_array;
       cb_pointers->rows[i]->new_metrics.num_of_entries++;
-      intermidiate_array = NULL;
+      intermediate_array = NULL;
   }
 
   return 0;
@@ -115,7 +120,7 @@ static int _reportChunkDataCB(void *int_data, void *ext_data) {
    * be aligned in size */
   if (r_data_size != unified_size) {
       /* Align the data chunk to the new size*/
-      r_data_prepared = malloc(unified_size * tsdb_val_len);
+      r_data_prepared = (tsdb_value *) malloc(unified_size * tsdb_val_len);
       if (r_data_prepared == NULL) return -1;
       memset(r_data_prepared, ((tsdb_handler *) int_data)->unknown_value, unified_size * tsdb_val_len);
 
@@ -155,7 +160,7 @@ static int _reportChunkDataCB(void *int_data, void *ext_data) {
       r_data_prepared = NULL;
   }
 
-  *(rows_bundle->last_accum_update) = time(NULL);
+  *(rows_bundle->last_accum_update) = (time_t) ((tsdb_handler *) int_data)->chunk.epoch;
 
   return 0;
 }
@@ -204,9 +209,9 @@ static int check_args_init(tsdbw_handle *handle, u_int16_t *finest_timestep,
 static void free_dbhs (tsdb_handler **h_dbs) {
   int i = 0;
   for (; i < TSDBW_DB_NUM; ++i) {
-      free(h_dbs[i]);
+      free(h_dbs[i]); h_dbs[i] = NULL;
   }
-  free(h_dbs);
+  free(h_dbs); h_dbs = NULL;
 }
 
 static int open_DBs(tsdbw_handle *handle, u_int16_t *finest_timestep,
@@ -312,6 +317,8 @@ static int open_DBs(tsdbw_handle *handle, u_int16_t *finest_timestep,
 static int init_structures_and_callbacks(tsdbw_handle *h) {
 
   int i;
+  u_int32_t cur_time = (u_int32_t) time(NULL);
+  u_int32_t cur_time_norm;
 
   /* Assigning initial values */
   for (i = 0; i < TSDBW_DB_NUM; ++i){
@@ -323,16 +330,28 @@ static int init_structures_and_callbacks(tsdbw_handle *h) {
   h->mod_accum.cr_elapsed = 0;
   h->mod_accum.new_metrics.list = NULL;
   h->mod_accum.new_metrics.num_of_entries = 0;
-  h->mod_accum.last_flush_time = 0;
+  if (h->db_hs[TSDBW_MODERATE]->most_recent_epoch == 0) {
+      cur_time_norm = cur_time;
+      normalize_epoch(h->db_hs[TSDBW_MODERATE], &cur_time_norm);
+      h->mod_accum.last_flush_time =  (time_t) cur_time_norm;
+  } else {
+      h->mod_accum.last_flush_time =  (time_t) h->db_hs[TSDBW_MODERATE]->most_recent_epoch;
+  }
 
   h->coarse_accum.data = NULL;
   h->coarse_accum.size = 0;
   h->coarse_accum.cr_elapsed = 0;
   h->coarse_accum.new_metrics.list = NULL;
   h->coarse_accum.new_metrics.num_of_entries = 0;
-  h->coarse_accum.last_flush_time = 0;
+  if (h->db_hs[TSDBW_COARSE]->most_recent_epoch == 0) {
+      cur_time_norm = cur_time;
+      normalize_epoch(h->db_hs[TSDBW_COARSE], &cur_time_norm);
+      h->coarse_accum.last_flush_time =  (time_t) cur_time_norm;
+  } else {
+      h->coarse_accum.last_flush_time =  (time_t) h->db_hs[TSDBW_COARSE]->most_recent_epoch;
+  }
 
-  h->last_accum_update = 0;
+  h->last_accum_update = (time_t) cur_time;
 
   h->cb_communication.last_accum_update = &h->last_accum_update;
   h->cb_communication.num_of_rows = TSDBW_DB_NUM - 1; // assuming every but fine DB has its own accumulation buffer for incremental consolidation
@@ -383,7 +402,7 @@ int tsdbw_init(tsdbw_handle *h, u_int16_t *finest_timestep,
   /* Assigning initial values */
   if (init_structures_and_callbacks(h)) return -1;
 
-    /* Start consolidation daemon */
+  /* Start consolidation daemon */
   if (consolidation_start(h) != 0) return -1;
 
   return 0;
@@ -401,9 +420,16 @@ static int tsdbw_consolidated_flush(tsdb_handler *tsdb_h, tsdb_row_t *accum_buf,
   u_int32_t epoch_current = (u_int32_t) time(NULL);
   normalize_epoch(tsdb_h, &epoch_current);
 
+  /* If no data to flush */
+  if (accum_buf->size == 0) {
+      if (accum_buf->new_metrics.num_of_entries != 0) return -1; //error in logic
+      accum_buf->last_flush_time = (time_t) epoch_current;
+      return 0;
+  }
+
   tsdb_goto_epoch(tsdb_h, epoch_to_write, err_if_epoch_missing, allowed_to_grow_epochs);
 
-  if (epoch_to_write + tsdb_h->slot_duration < epoch_current) { //they are equal if no epochs were missed
+  if (epoch_to_write + tsdb_h->slot_duration < epoch_current && epoch_to_write != 0) { //they are equal if no epochs were missed
       /* some consolidation epochs were missed (spent as outage),
        *  i.e., not written. We may want to do smth about it here */
 
@@ -420,23 +446,25 @@ static int tsdbw_consolidated_flush(tsdb_handler *tsdb_h, tsdb_row_t *accum_buf,
       trace_warning("Missing epochs detected in a consolidated DB. Time step %u. Interval: %s -- %s", tsdb_h->slot_duration, str_beg, str_end);
   }
 
-  if (tsdb_h->lowest_free_index !=  accum_buf->size - accum_buf->new_metrics.num_of_entries) {
+  //if (tsdb_h->lowest_free_index !=  accum_buf->size - accum_buf->new_metrics.num_of_entries) {
       /* This IF checks for absence of gaps in metrics. We dont want to end up in
        * a situation where not all data columns have associated metrics (names). This
        * will render us being unable to query these columns */
-      // tsdb_h->lowest_free_index is number of metrics in the TSDB at the current state (N.B. lowest_free_index counts since 0)
-      // accum_buf->size is number of metrics in TSDB after updating it
-      // accum_buf->new_metrics.num_of_entries is number of NEW metrics which are to be
+      // tsdb_h->lowest_free_index is number of metrics in the TSDB at the time of a last written epoch (N.B. lowest_free_index counts since 0)
+      // accum_buf->size is the size of an array containing data, is a multiple of chunk size
+      // accum_buf->new_metrics.num_of_entries is the number of NEW metrics which are to be
       // added to the current TSDB
-      trace_error("Not enough metric names for provided data to write in a consolidated DB. Nothing will be written.");
-      return -1;
-  }
+  //    trace_error("Not enough metric names for provided data to write in a consolidated DB. Nothing will be written.");
+  //    return -1;
+  //}
 
   /* Firstly we write values for already existing metrics in the consolidated DB.
    * Hence we address metrics by index rather than name. It is possible only
    * due to monotonic allocation of column indices to new metrics, so that
-   * new metrics are appended always at the very end one by one*/
-  for (i = 0; i < tsdb_h->lowest_free_index; ++i) {
+   * new metrics are appended always at the very end one by one */
+
+  size_t data_entries_num = tsdb_h->lowest_free_index > accum_buf->size ? accum_buf->size : tsdb_h->lowest_free_index;
+  for (i = 0; i < data_entries_num; ++i) {
       if (tsdb_set_by_index(tsdb_h, &accum_buf->data[i * nvpe], &i)) {
           trace_error("Failed to write a value in consolidated TSDB. New metrics were not being added and the DB consistency is intact.");
           break;
@@ -445,47 +473,49 @@ static int tsdbw_consolidated_flush(tsdb_handler *tsdb_h, tsdb_row_t *accum_buf,
 
   /* Now we write new metrics and respective values in the consolidated DB.
    * We use regular tsdb_set() to create the mappings metric-column index internally. */
-  start_idx = accum_buf->size - accum_buf->new_metrics.num_of_entries; // == tsdb_h->lowest_free_index
-  for (i = 0; i < accum_buf->new_metrics.num_of_entries; ++i) {
-      if (tsdb_set(tsdb_h, accum_buf->new_metrics.list[i], &accum_buf->data[(start_idx + i) * nvpe])) {
-          err_flag = 1;
-          trace_error("Failed to write a value in consolidated TSDB. New metrics were being written, attempting to recover for the next flush.");
-          /* Attempt of recovery: all values get nullified in the accum buffer,
-           * its size is preserved, unwritten metrics are preserved. So that they can
-           * be written upon next flushing*/
-          for (j = 0; j < accum_buf->size * nvpe; ++j) {
-              accum_buf->data[j] = 0; // we deliberately nullify it and not setting it to an undefined value, because arithmetic operations in the consolidation function are undefined in general for an undefined value
-          }
-              /* by setting "saccum_buf->cr_elapsed = 0;" at the end of the function
+  if (accum_buf->size > tsdb_h->lowest_free_index) {
+      start_idx = tsdb_h->lowest_free_index;
+      for (i = 0; i < accum_buf->new_metrics.num_of_entries; ++i) {
+          if (tsdb_set(tsdb_h, accum_buf->new_metrics.list[i], &accum_buf->data[(start_idx + i) * nvpe])) {
+              err_flag = 1;
+              trace_error("Failed to write a value in consolidated TSDB. New metrics were being written, attempting to recover for the next flush.");
+              /* Attempt of recovery: all values get nullified in the accum buffer,
+               * its size is preserved, unwritten metrics are preserved. So that they can
+               * be written upon next flushing */
+              memset(accum_buf->data, 0, accum_buf->size * tsdb_h->values_len); // we deliberately nullify it and not setting it to an undefined value, because arithmetic operations in the consolidation function are undefined in general for an undefined value
+
+              /* by setting "accum_buf->cr_elapsed = 0;" at the end of the function
                * we effectively cancel the difference for _reportChunkDataCB
                * between unallocated accum_buf->data and
                * allocated and filled with zeros. Hence
                * the consolidated values (after consolidation function
                * passage over accum_buf->data) will not be biased */
-          char **saved_metrics = malloc((accum_buf->new_metrics.num_of_entries - i) * sizeof(char*));
-          for (j = 0; j < accum_buf->new_metrics.num_of_entries - i; ++j) {
-              saved_metrics[j] = accum_buf->new_metrics.list[i + j]; //copying pointers to unwritten metrics
-          }
-          for (j = 0; j < i; ++j) {
-              free(accum_buf->new_metrics.list[j]); //freeing successfully written metrics
-          }
-          free(accum_buf->new_metrics.list);
-          accum_buf->new_metrics.list = saved_metrics;
-          accum_buf->new_metrics.num_of_entries = accum_buf->new_metrics.num_of_entries - i;
+              char **saved_metrics = (char **) malloc((accum_buf->new_metrics.num_of_entries - i) * sizeof(char*));
+              for (j = 0; j < accum_buf->new_metrics.num_of_entries - i; ++j) {
+                  saved_metrics[j] = accum_buf->new_metrics.list[i + j]; //copying pointers to unwritten metrics
+              }
+              for (j = 0; j < i; ++j) {
+                  free(accum_buf->new_metrics.list[j]); //freeing successfully written metrics
+              }
+              free(accum_buf->new_metrics.list);
+              accum_buf->new_metrics.list = saved_metrics;
+              accum_buf->new_metrics.num_of_entries = accum_buf->new_metrics.num_of_entries - i;
 
-          trace_info("Recovery of unwritten metrics succeeded");
-          break;
+              trace_info("Recovery of unwritten metrics succeeded");
+              break;
+          }
       }
   }
 
+
   if (!err_flag) {
-      free(accum_buf->data);
-      accum_buf->data = NULL;
+      free(accum_buf->data); // allocated within data callback
+      accum_buf->data = NULL; // MUST BE NULL, so that realloc in a callback can allocate memory anew as malloc
       accum_buf->size = 0;
       for (j = 0; j < accum_buf->new_metrics.num_of_entries; ++j) { //accum_buf->new_metrics.num_of_entries is intact only if no errors happened
           free(accum_buf->new_metrics.list[j]);
       }
-      free(accum_buf->new_metrics.list);
+      free(accum_buf->new_metrics.list); // allocated within metric callback
       accum_buf->new_metrics.list = NULL;
       accum_buf->new_metrics.num_of_entries = 0;
   }
@@ -689,22 +719,25 @@ int tsdbw_write(tsdbw_handle *db_set_h,
                 u_int32_t num_elem) {
 
   int i;
-
+  char report_str[20];
   if (db_set_h->mode == TSDBW_MODE_READ) return -1;
 
   /* Sanity checks */
   if (check_args_write(db_set_h, metrics, values, num_elem) != 0) return -1;
 
-  /* Flushing arrays of consolidated data, if we step over an epoch */
+  /* Updating the fine TSDB with values for metrics*/
+  if (fine_tsdb_update(db_set_h, metrics, values, num_elem) != 0) return -1;
 
+  /* Flushing arrays of consolidated data, if we step over an epoch */
   time_t cur_time = time(NULL);
   time_t time_diff, time_step;
 
   for (i = 1; i < TSDBW_DB_NUM; ++i) { // omitting the finest TSDB
 
-      time_diff = cur_time - db_set_h->cb_communication.rows[i]->last_flush_time;
+     // if (db_set_h->cb_communication.rows[i-1]->last_flush_time == 0) continue; //skip if the given TSDB is empty (newly created)
+
+      time_diff = cur_time - db_set_h->cb_communication.rows[i-1]->last_flush_time;
       time_step = (time_t)db_set_h->db_hs[i]->slot_duration;
-      //TODO check the init case when db_set_h->cb_communication.rows[i]->data == NULL
 
       if (time_diff < 0) {
 
@@ -714,16 +747,16 @@ int tsdbw_write(tsdbw_handle *db_set_h,
 
       } else if (time_diff >= time_step ) {
 
-          if (tsdbw_consolidated_flush(db_set_h->db_hs[i], db_set_h->cb_communication.rows[i], db_set_h->last_accum_update  )) {
+          i == TSDBW_MODERATE ? sprintf(report_str,"moderate") : sprintf(report_str,"coarse");
+
+          trace_info("Flushing %s TSDB\n",report_str);
+
+          if (tsdbw_consolidated_flush(db_set_h->db_hs[i], db_set_h->cb_communication.rows[i-1], db_set_h->last_accum_update  )) {
               return -1;
           }
 
       }
-
   }
-
-  /* Updating the fine TSDB with values for metrics*/
-  if (fine_tsdb_update(db_set_h, metrics, values, num_elem) != 0) return -1;
 
   return 0;
 }
@@ -899,7 +932,7 @@ int tsdbw_query(tsdbw_handle *db_set_h, q_request_t *req, q_reply_t *rep) {
   if (get_list_of_epochs(tsdb_h, epoch_from, epoch_to, &epochs_list, &isEpochEmpty, &epoch_num)) return -1;
 
   /* Allocate memory for the array of the query results */
-  if (tsdbw_query_alloc_result_array(&rep->tuples, metrics_num, epoch_num) ) { //TODO free tuples externally (Inner allocation, then Outer)
+  if (tsdbw_query_alloc_result_array(&rep->tuples, metrics_num, epoch_num) ) {
       free(epochs_list);
       free(isEpochEmpty);
       return -1;

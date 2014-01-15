@@ -41,7 +41,7 @@ static void db_put(tsdb_handler *handler,
     data.size = value_len;
 
     if (handler->db->put(handler->db, NULL, &key_data, &data, 0) != 0) {
-        trace_error("Error while map_set(%u, %u)", key, value);
+        trace_error("Error while map_set(%s, %d)", (char*)key, *((tsdb_value*)value));
     }
 }
 
@@ -265,6 +265,18 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
 
     if (handler->chunk.new_epoch_flag) {
 
+        if (handler->most_recent_epoch >= handler->chunk.epoch) {
+            trace_error("BUG: last epoch in DB %d >= current epoch %d being written \n", handler->most_recent_epoch, handler->chunk.epoch);
+        }
+
+        /* The following assertion is fundamental for the logic.
+         * It assures that no epochs can be created in the past, and thus inserted
+         * into list of epochs in DB at the end. This will violate the assumption,
+         * that all epochs in the list are sorted in chronological order.
+         * In principle one can cancel this limitation by introducing sorting
+         * every time we flush a chunk for a new epoch into DB. However
+         * if we have about 1 million of epochs and have to sort among them for
+         * every DB flush, it can prove being greedy for too much CPU resources */
         assert_true(handler->most_recent_epoch < handler->chunk.epoch);
 
         rv = epoch_list_add(handler, handler->chunk.epoch);

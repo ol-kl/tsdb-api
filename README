@@ -4,7 +4,7 @@ Refactored verion: https://github.com/gar1t/tsdb
 
 he purpose of this project - to tailor TSDB for storing network measurement information which can be fed into DB quite fast. Thus we need fast writing time in order to be ready to write next update. The eventual goal is tight integration with SNMP routines, which query devices, collect metrics and push them endowed with a time-stamp into TSDB as fast as possible. Subsequent routines will query the DB to fetch relevant data and plot it.
 
-To profile read / write time of the TSDB with 1 000 000 time series and 60 epochs, see test-queryTime -h.
+To profile read / write time of the TSDB with 1 000 000 time series and 60 epochs, see bin/test-tsdbAPI -h.
 The project requires the libdb-dev package.
 
 

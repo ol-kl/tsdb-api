@@ -1,5 +1,5 @@
 CC           = gcc -g
-CFLAGS       = -Wall -I. -DSEATEST_EXIT_ON_FAIL
+CFLAGS       = -Wall -I. -I./unit_tests -DSEATEST_EXIT_ON_FAIL
 LDFLAGS      = -L /opt/local/lib
 SYSLIBS      = -ldb
 
@@ -9,8 +9,9 @@ TSDB_LIB_O   = tsdb_api.o tsdb_trace.o tsdb_bitmap.o quicklz.o tsdb_wrapper_api.
 TEST_LIBS    = $(TSDB_LIB) seatest.o
 
 TARGETS      = $(TSDB_LIB) \
-				test-queryTime \
-				test-data_generator
+		bin/test-tsdbAPI \
+		bin/test-tsdbwAPI \
+		bin/test-concurrency
 
 all: $(TARGETS)
 
@@ -24,8 +25,8 @@ $(TSDB_LIB): $(TSDB_LIB_O)
 tsdb-%: tsdb_%.o $(TSDB_LIB)
 	$(CC) $(LDFLAGS) tsdb_$*.o $(TSDB_LIB) $(SYSLIBS) -o $@
 
-test-%: test_%.o $(TEST_LIBS)
-	$(CC) $(LDFLAGS) test_$*.o $(TEST_LIBS) $(SYSLIBS) -o $@
+bin/test-%: unit_tests/test_%.o $(TEST_LIBS)
+	$(CC) $(LDFLAGS) unit_tests/test_$*.o $(TEST_LIBS) $(SYSLIBS) -o $@
 
 clean:
 	rm -f ${TARGETS} *.o *~ test-* tsdb-*

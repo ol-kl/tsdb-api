@@ -56,7 +56,7 @@ typedef struct {
   size_t size; // of data
   u_int32_t cr_elapsed; //consolidation rounds elapsed on data
   metrics_t new_metrics; // emptied during each write cycle in a respective consolidated DB
-  time_t last_flush_time;
+  time_t last_flush_time; // last sync'ed epoch in the related consolidated TSDB as well
 } tsdb_row_t;
 
 typedef  struct {
@@ -70,7 +70,7 @@ typedef struct {
   tsdb_handler **db_hs; // number of DBs is defined by TSDBW_DB_NUM
   tsdb_row_t mod_accum;
   tsdb_row_t coarse_accum;
-  time_t last_accum_update; // using this time we can find out which epoch the consolidated data should be attributed to
+  time_t last_accum_update; // using this time we can find out which epoch the consolidated data should be attributed to. Every fine TSDB sync -> data callback -> consolidation buffers updated incrementally -> this timer updated
   pointers_collection_t cb_communication;
 } tsdbw_handle;
 
@@ -89,7 +89,7 @@ typedef struct {
 
 int tsdbw_query(tsdbw_handle *db_set_h, // handle of all DBs, must be preallocated
                 q_request_t *req,
-                q_reply_t *rep);
+                q_reply_t *rep);        // deallocation of rep->tuples has to be done explicitly
 
 
 int tsdbw_write(tsdbw_handle *db_set_h,      // handle of all DBs, must be preallocated

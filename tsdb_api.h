@@ -33,7 +33,7 @@
 #define MAX_NUM_FRAGMENTS 16384
 
 typedef struct {
-    u_int8_t *data;
+    u_int8_t *data; //byte-wise data representation
     u_int8_t new_epoch_flag;
     u_int32_t data_len;
     u_int32_t epoch;
@@ -61,7 +61,7 @@ typedef struct {
     u_int8_t read_only;
     u_int16_t values_per_entry; //1,2,3... number of values to store per epoch per time-series
     u_int16_t values_len; //=values_per_entry * sizeof(tsdb_value)
-    u_int32_t unknown_value; //default value in a DB's entries
+    tsdb_value unknown_value; //default value in a DB's entries
     u_int32_t number_of_epochs;
     u_int32_t most_recent_epoch;
     u_int32_t lowest_free_index; //started with 0
