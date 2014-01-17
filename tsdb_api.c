@@ -275,7 +275,7 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
          * that all epochs in the list are sorted in chronological order.
          * In principle one can cancel this limitation by introducing sorting
          * every time we flush a chunk for a new epoch into DB. However
-         * if we have about 1 million of epochs and have to sort among them for
+         * if we have about 1 million of epochs and have to sort them for
          * every DB flush, it can prove being greedy for too much CPU resources */
         assert_true(handler->most_recent_epoch < handler->chunk.epoch);
 

@@ -732,7 +732,7 @@ int tsdbw_write(tsdbw_handle *db_set_h,
   time_t cur_time = time(NULL);
   time_t time_diff, time_step;
 
-  for (i = 1; i < TSDBW_DB_NUM; ++i) { // omitting the finest TSDB
+  for (i = 1; i < TSDBW_DB_NUM; ++i) { // omitting the finest TSDB (i == 0)
 
      // if (db_set_h->cb_communication.rows[i-1]->last_flush_time == 0) continue; //skip if the given TSDB is empty (newly created)
 
@@ -754,7 +754,6 @@ int tsdbw_write(tsdbw_handle *db_set_h,
           if (tsdbw_consolidated_flush(db_set_h->db_hs[i], db_set_h->cb_communication.rows[i-1], db_set_h->last_accum_update  )) {
               return -1;
           }
-
       }
   }
 
@@ -833,7 +832,7 @@ static int check_args_query(tsdb_handler *tsdb_h, time_t *epoch_from,
   }
 
   if (*epoch_from > *epoch_to) {
-      trace_error("Wrong epoch range");
+      trace_error("Wrong epoch range"); //TODO debug here
       return -1;
   }
 

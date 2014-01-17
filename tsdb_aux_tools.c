@@ -91,3 +91,27 @@ void time2str(u_int32_t *tmr, char* str, size_t strsize) {
   struct tm *tmr_struct = gmtime(&temp_buf);
   strftime(str,strsize,"%T %d-%m-%Y",tmr_struct);
 }
+
+void free_darray(size_t nrows, void **arr) {
+  size_t i;
+  for(i = 0; i < nrows; ++i) free(arr[i]);
+  free(arr);
+}
+
+void** malloc_darray(size_t nrows, size_t ncols, size_t elem_size) {
+  size_t i, j;
+  void **tmp;
+
+  if ((tmp = malloc(nrows * sizeof *tmp)) == NULL) return NULL;
+
+  for(i = 0; i < nrows; ++i) {
+      tmp[i] = malloc(ncols * elem_size);
+      if (tmp[i] == NULL) {
+          for(j = 0; j < i; ++j) free(tmp[j]);
+          return NULL;
+      }
+  }
+  return tmp;
+}
+
+

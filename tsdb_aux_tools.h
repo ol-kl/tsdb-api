@@ -33,4 +33,10 @@ void time2str(u_int32_t *tmr, char* str, size_t strsize);
 /* Random permutation of an arbitrary array */
 void shuffle(void *obj, size_t nmemb, size_t size);
 
+
+void** malloc_darray(size_t nrows, size_t ncols, size_t elem_size);
+
+/* Memory deallocation for a double indexed array*/
+void free_darray(size_t nrows, void **arr);
+
 #endif /* TSDB_AUX_TOOLS_H_ */

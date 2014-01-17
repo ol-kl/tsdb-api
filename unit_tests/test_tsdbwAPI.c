@@ -17,37 +17,87 @@
  * implementation and usage */
 
 #include "tsdb_wrapper_api.h"
-#include <unistd.h>
 #include "seatest.h"
+#include "tsdb_aux_tools.h"
+#include <unistd.h>
 
 #define TSDB_DG_METRIC_NUM 6
 #define TSDB_DG_EPOCHS_NUM 20
 #define TSDB_DG_FINE_TS 2
 
+typedef struct {
+    int verbose_lvl;
+} set_args;
+
+static void help(int val) {
+
+fprintf(stdout,"Use: test_tsdbwAPI [-v]\n");
+fprintf(stdout,"This unit test checks TSDB wrapper API\n");
+fprintf(stdout,"-v  enables verbose mode\n");
+exit(val);
+}
+
+static void process_args(int argc, char **argv,set_args *args) {
+
+  int c;
+  args->verbose_lvl = 0;
+
+  while ((c = getopt(argc, argv,"v")) != -1) {
+      switch (c) {
+      case 'h':
+          help(0);
+          break;
+      case 'v':
+          args->verbose_lvl ++;
+          break;
+      default:
+          help(1);
+          break;
+      }
+  }
+
+  if (args->verbose_lvl > 1) {
+      help(1);
+  }
+}
+
 int metrics_create(char ***metrics_arr) {
 
   char **metrics;
-  u_int32_t cnt, rcnt;
+  u_int32_t cnt;
 
-  /* Outer allocation */
-  metrics = (char **) malloc(TSDB_DG_METRIC_NUM * sizeof(char *));
-  if (metrics == NULL) return -1;
+  metrics = (char **) malloc_darray(TSDB_DG_METRIC_NUM, MAX_METRIC_STRING_LEN, sizeof(char));
+  if (!metrics) goto err_cleanup;
 
-  /* Inner allocation */
   for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) {
-      metrics[cnt] = (char *) malloc(MAX_METRIC_STRING_LEN * sizeof(char));
-      if (metrics[cnt] == NULL) goto err_cleanup;
       if (sprintf(metrics[cnt], "m-%lu", cnt +1) < 0) goto err_cleanup;
   }
 
   *metrics_arr = metrics;
   return 0;
 
+//
+//
+//  /* Outer allocation */
+//  metrics = (char **) malloc(TSDB_DG_METRIC_NUM * sizeof(char *));
+//  if (metrics == NULL) return -1;
+//
+//  /* Inner allocation */
+//  for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) {
+//      metrics[cnt] = (char *) malloc(MAX_METRIC_STRING_LEN * sizeof(char));
+//      if (metrics[cnt] == NULL) goto err_cleanup;
+//      if (sprintf(metrics[cnt], "m-%lu", cnt +1) < 0) goto err_cleanup;
+//  }
+//
+//  *metrics_arr = metrics;
+//  return 0;
+
   err_cleanup:
-  for (rcnt = 0; rcnt < cnt; ++rcnt) {
-      free(metrics[rcnt]);
-  }
-  free(metrics);
+  free_darray(TSDB_DG_METRIC_NUM, (void **)metrics);
+//  for (rcnt = 0; rcnt < cnt; ++rcnt) {
+//      free(metrics[rcnt]);
+//  }
+//  free(metrics);
   *metrics_arr = NULL;
   return -1;
 }
@@ -188,13 +238,18 @@ int epochs_alligned(tsdbw_handle *db_bundle) {
 
 u_int32_t emulate_outage(u_int32_t *time) {
 
+  printf("Emulating write process outage... ");
+
   unsigned int time_uint = *time;
 
   u_int32_t time_left = sleep(time_uint);
   if (time_left){
       printf("Sleep phase was not finished. %u seconds left. Aborting\n", time_left);
       fflush(stdout);
+  } else {
+      printf("Done\n");
   }
+
   return time_left;
 }
 
@@ -234,7 +289,7 @@ int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *s_time) {
   u_int32_t num_epochs = (h->epoch_list[h->most_recent_epoch] - h->epoch_list[0]) / h->slot_duration + ep_afront_num + ep_trail_num;
   assert_true(num_epochs == TSDB_DG_EPOCHS_NUM * 2 + *s_time/ h->slot_duration + ep_afront_num + ep_trail_num);
 
-  u_int32_t *epoch_list_an = (u_int32_t *) malloc(num_epochs * sizeof(u_int32_t)); //anticipated epochs
+  u_int32_t *epoch_list_an = (u_int32_t *) malloc(num_epochs * sizeof *epoch_list_an); //anticipated epochs
 
   /** Creating anticipated epochs **/
   /* First anticipated epoch */
@@ -248,10 +303,11 @@ int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *s_time) {
   /** Creating anticipated values **/
   int64_t **values_chunk_an;
   rv = create_pattern(& values_chunk_an); assert_true(rv == 0);
-  int64_t **values_an = (int64_t **) malloc(TSDB_DG_METRIC_NUM * sizeof(int64_t *)); assert_true(values_an != NULL);
-  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-      values_an[i] = (int64_t *) calloc(num_epochs, sizeof(int64_t)); assert_true(values_an[i] != NULL);
-  }
+  int64_t **values_an = (int64_t **) malloc_darray(TSDB_DG_METRIC_NUM, num_epochs, sizeof(int64_t)); assert_true(values_an != NULL);
+//  int64_t **values_an = (int64_t **) malloc(TSDB_DG_METRIC_NUM * sizeof(int64_t *)); assert_true(values_an != NULL);
+//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
+//      values_an[i] = (int64_t *) calloc(num_epochs, sizeof(int64_t)); assert_true(values_an[i] != NULL);
+//  }
 
   /** Creating anticipated values **/
   /* First two epochs for all metrics must have default values
@@ -307,8 +363,9 @@ int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *s_time) {
 
   free(epoch_list_an);
 
-  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) free(values_an[i]);
-  free(values_an);
+  free_darray(TSDB_DG_METRIC_NUM, (void **)values_an);
+//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) free(values_an[i]);
+//  free(values_an);
 
   return 0;
 }
@@ -320,8 +377,31 @@ void reply_data_destroy(q_reply_t *rep) {
   free(rep->tuples);
 }
 
+int set_timers_norm (tsdbw_handle *db_bundle, time_t ctime) {
 
-int main() {
+  u_int32_t ctime_mod = (u_int32_t) ctime;
+  u_int32_t ctime_crs = (u_int32_t) ctime;
+  assert_true(ctime_mod == ctime_crs); // epochs are aligned
+  normalize_epoch(db_bundle->db_hs[TSDBW_MODERATE], &ctime_mod);
+  normalize_epoch(db_bundle->db_hs[TSDBW_COARSE], &ctime_crs);
+  db_bundle->mod_accum.last_flush_time = (time_t) ctime_mod;
+  db_bundle->coarse_accum.last_flush_time = (time_t) ctime_crs;
+  db_bundle->last_accum_update = ctime; // we can play around with it: it may point either to the current or prev epoch
+  return 0;
+}
+
+void wait_alignment(tsdbw_handle *db_bundle) {
+
+  printf("Waiting for current epochs of all open TSDBs to get aligned...");
+  while(!epochs_alligned(db_bundle));
+  printf(" Done\n");
+}
+
+int main(int argc, char *argv[]) {
+
+  set_args args;
+  process_args(argc, argv, &args);
+  set_trace_level(args.verbose_lvl ? 99 : 0);
 
   tsdbw_handle db_bundle;
   u_int32_t sleep_time;
@@ -333,8 +413,6 @@ int main() {
   db_paths[1] = "./DBs/m_db.tsdb";
   db_paths[2] = "./DBs/c_db.tsdb";
 
-  set_trace_level(99);
-
   /* Create test pattern of events */
   rv = create_pattern(&values); assert_true(rv == 0);
 
@@ -344,11 +422,10 @@ int main() {
   sleep_time = 2 * db_bundle.db_hs[2]->slot_duration; // 2 epochs of the coarse TSDB
 
   /* Writing epochs according to pattern once epochs in all TSDBs are aligned */
-  while(!epochs_alligned(&db_bundle));
-
-  //TODO set current epoch time to all rows in lasft_flush_time and last_update_time
+  wait_alignment(&db_bundle);
+  rv = set_timers_norm(&db_bundle, time(NULL));  assert_true(rv == 0);
   rv = writing_cycle_engage(&db_bundle, values); assert_true(rv == 0);
-  tsdbw_close(&db_bundle);
+  tsdbw_close(&db_bundle); printf("DBs are closed\n");
 
   /* Emulate outage time for DB */
   rv = emulate_outage(& sleep_time); assert_true(rv == 0);
@@ -367,7 +444,7 @@ int main() {
   q_request_t req;
   q_reply_t rep;
   rv = prepare_args_q_test1(&db_bundle, &req); assert_true(rv == 0);
-  rv = tsdbw_query(&db_bundle, &req, &rep); assert_true(rv == 0);
+  rv = tsdbw_query(&db_bundle, &req, &rep); assert_true(rv == 0); //TODO debug here: tsdb_wrapper_api.c:835] ERROR: Wrong epoch range
   rv = verify_reply_test1(db_bundle.db_hs[0], &rep, &sleep_time); assert_true(rv == 0);
 
   reply_data_destroy(&rep);
