@@ -10,9 +10,12 @@
  * 2. Consolidation function should be triggered on a schedule base, not by write requests as of now, as there can be no write requests at all during outage. Implement it as a separate process / thread.
  * 3. Support of values_per_entry > 1 by local functions. Some of them support it already. This however will require implementation of arithmetic for long types (more than int64_t).
  * 4. Syslogging / custom logging to file of all tracing info instead of stdout.
+ * 5. Global writing process lock - only one TSDB writing process can be started. Implementation: either through some tsdbw.lock file or using the app specific field DB_ENV->app_private field, where DB_ENV is the Berkeley DB environment handle.
  * */
 
 #include "tsdb_wrapper_api.h"
+
+#define _TSDBW_DEBUG_
 
 #define lambda(l_ret_type, l_arguments, l_body)         \
         ({                                                    \
@@ -20,6 +23,10 @@
          l_body                                            \
          &l_anonymous_functions_name;                        \
          })
+
+#ifdef _TSDBW_DEBUG_
+#include "seatest.h"
+#endif
 
 static int _reportNewMetricCB(void *int_data, void *ext_data) {
 
@@ -782,9 +789,8 @@ static int get_list_of_epochs(tsdb_handler *db_h, u_int32_t epoch_from, u_int32_
 
   if (epoch_from == epoch_to || epoch_from + db_h->slot_duration == epoch_to) {
       /* One epoch */
-      epochs_list = (u_int32_t *) malloc(sizeof(u_int32_t));
-      isEpochEmpty = (u_int8_t *) malloc(sizeof(u_int8_t));
-      if (epochs_list == NULL || isEpochEmpty == NULL) return -1;
+      if ((epochs_list = (u_int32_t *) calloc(1, sizeof(u_int32_t))) == NULL) return -1;
+      if ((isEpochEmpty = (u_int8_t *) calloc(1, sizeof(u_int8_t))) == NULL) {free(epochs_list); return -1;}
       *epochs_list = epoch_to;
       *isEpochEmpty = 0;
       *epoch_num = 1;
@@ -792,12 +798,12 @@ static int get_list_of_epochs(tsdb_handler *db_h, u_int32_t epoch_from, u_int32_
   } else {
       /* All other cases */
       u_int32_t i, j;
-      *epoch_num = epoch_from / epoch_to;
-      epochs_list = (u_int32_t *) malloc(sizeof(u_int32_t) * *epoch_num);
-      isEpochEmpty = (u_int8_t *) malloc(sizeof(u_int8_t) * *epoch_num);
+      *epoch_num = (epoch_to - epoch_from) / db_h->slot_duration + 1;
+      if ((epochs_list = (u_int32_t *) calloc(*epoch_num, sizeof(u_int32_t))) == NULL) return -1;
+      if ((isEpochEmpty = (u_int8_t *) calloc(*epoch_num, sizeof(u_int8_t))) == NULL) {free(epochs_list); return -1;}
       if (epochs_list == NULL || isEpochEmpty == NULL) return -1;
       for (i = 0, j = 0; i < *epoch_num; ++i) {
-          epochs_list[i] = epoch_from + i * db_h->slot_duration; //TODO check epochs_list[*epoch_num - 1] == epoch_to
+          epochs_list[i] = epoch_from + i * db_h->slot_duration;
           if (epochs_list[i] < db_h->epoch_list[0] ||
               epochs_list[i] > db_h->most_recent_epoch ||
               epochs_list[i] < db_h->epoch_list[j]) {
@@ -807,7 +813,11 @@ static int get_list_of_epochs(tsdb_handler *db_h, u_int32_t epoch_from, u_int32_
               j++;
           }
       }
-      //TODO check j == db_h->number_of_epochs
+#ifdef _TSDBW_DEBUG_
+          assert_true(j == db_h->number_of_epochs);
+          assert_true(epochs_list[*epoch_num - 1] == epoch_to);
+#endif
+
   }
 
   *epochs_list_p = epochs_list;
@@ -832,7 +842,7 @@ static int check_args_query(tsdb_handler *tsdb_h, time_t *epoch_from,
   }
 
   if (*epoch_from > *epoch_to) {
-      trace_error("Wrong epoch range"); //TODO debug here
+      trace_error("Wrong epoch range");
       return -1;
   }
 
@@ -866,30 +876,9 @@ static int tsdbw_query_alloc_result_array(data_tuple_t ***tuples,
     u_int32_t metrics_num,
     u_int32_t epoch_num) {
 
-  data_tuple_t **query_res = *tuples;
-  u_int32_t metr_idx;
 
-  /* Outer allocation */
-  query_res = (data_tuple_t **) calloc(metrics_num, sizeof(data_tuple_t *));
-
-  if (query_res == NULL) {
-      trace_error("Failed to allocate memory");
-      return -1;
-  }
-
-  /* Inner allocation */
-  for (metr_idx = 0; metr_idx < metrics_num; ++metr_idx) {
-      query_res[metr_idx] = (data_tuple_t *) calloc(epoch_num, sizeof(data_tuple_t));
-      if (query_res[metr_idx] == NULL) {
-          u_int32_t i;
-          for (i = 0; i < metr_idx; ++i) {
-              free(query_res[i]);
-          }
-          free(query_res);
-          trace_error("Failed to allocate memory");
-          return -1;
-      }
-  }
+  *tuples = (data_tuple_t **) malloc_darray(metrics_num, epoch_num, sizeof(data_tuple_t));
+  if (*tuples == NULL) return -1;
   return 0;
 }
 

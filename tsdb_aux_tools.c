@@ -7,11 +7,17 @@
 
 #include "tsdb_aux_tools.h"
 
+int fexist(const char* fname) {
+  if (access(fname,F_OK) != 0) return 0;
+  return 1;
+}
+
 int fremove(const char* fname) {
 
   if (!strlen(fname)){
       return (-1);
   }
+
   if (access(fname,F_OK) == -1) { //can't access the file
       if (errno != ENOENT){ //error is not of a file non existence type
           return (-1);
@@ -112,6 +118,47 @@ void** malloc_darray(size_t nrows, size_t ncols, size_t elem_size) {
       }
   }
   return tmp;
+}
+
+void** calloc_darray(size_t nrows, size_t ncols, size_t elem_size) {
+  size_t i, j;
+  void **tmp;
+
+  if ((tmp = malloc(nrows * sizeof *tmp)) == NULL) return NULL;
+
+  for(i = 0; i < nrows; ++i) {
+      tmp[i] = calloc(ncols, elem_size);
+      if (tmp[i] == NULL) {
+          for(j = 0; j < i; ++j) free(tmp[j]);
+          return NULL;
+      }
+  }
+  return tmp;
+}
+
+int tfprintf(FILE *fout, char *msg, ...) {
+  char buffer[256], timestr[32], *format;
+  int rv;
+  va_list args;
+  u_int32_t ctime = time(NULL);
+
+  time2str(&ctime, timestr, 32);
+  format = (char *) malloc((strlen(timestr) + strlen(msg) + 3 + 1) * sizeof(char)); //+3 for [, ], space and +1 for /0
+  if (format == NULL) return -1;
+  if (sprintf(format, "[%s] %s", timestr, msg) < 0) goto err_cln;
+  va_start (args, msg);
+  if (vsnprintf (buffer,256, format, args) < 0) goto err_cln;
+  va_end (args);
+  free(format);
+
+  rv = fprintf(fout, buffer);
+  if (ferror(fout) || rv < 0) goto err_cln;
+  fflush(fout);
+  return rv;
+
+  err_cln:
+  free(format);
+  return -1;
 }
 
 

@@ -1,7 +1,7 @@
 CC           = gcc -g
 CFLAGS       = -Wall -I. -I./unit_tests -DSEATEST_EXIT_ON_FAIL
 LDFLAGS      = -L /opt/local/lib
-SYSLIBS      = -ldb
+SYSLIBS      = -ldb -lcsv
 
 TSDB_LIB     = libtsdb.a
 TSDB_LIB_O   = tsdb_api.o tsdb_trace.o tsdb_bitmap.o quicklz.o tsdb_wrapper_api.o tsdb_aux_tools.o

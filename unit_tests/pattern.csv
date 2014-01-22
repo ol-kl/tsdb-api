@@ -1,0 +1,17 @@
+# The pattern is written as CSV and is to be read by test-tsdbwAPI
+# I used LibreOffice Calc to create this pattern
+# Export as CSV, field delim ',', character set UTF-8 which is 1 byte long
+# characters for ASCII ones
+# Number of rows will be number of metrics, the last digit in the first row
+# indicates overal number of epochs in the pattern
+# Think of it as of table: rows are metrics, columns are epochs and
+# values in the cells are those to be written into TSDB within
+# that epoch for that metric. If no value is provided, then no value
+# will be written into TSDB for the relevant metric within relevant epoch
+1,2,3,4,5,6,16,17,18,19,20
+10,10,10,10,10,10,,10,,,
+,20,20,20,20,20,,,,,20
+,30,30,30,30,30,30,,,,
+,,,40,40,40,,,,40,
+,,,,50,50,,,,,
+,,,,,60,,,60,,
