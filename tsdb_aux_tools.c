@@ -108,6 +108,8 @@ void** malloc_darray(size_t nrows, size_t ncols, size_t elem_size) {
   size_t i, j;
   void **tmp;
 
+  if (nrows == 0 || ncols == 0) return NULL;
+
   if ((tmp = malloc(nrows * sizeof *tmp)) == NULL) return NULL;
 
   for(i = 0; i < nrows; ++i) {
@@ -124,12 +126,41 @@ void** calloc_darray(size_t nrows, size_t ncols, size_t elem_size) {
   size_t i, j;
   void **tmp;
 
+  if (nrows == 0 || ncols == 0) return NULL;
+
   if ((tmp = malloc(nrows * sizeof *tmp)) == NULL) return NULL;
 
   for(i = 0; i < nrows; ++i) {
       tmp[i] = calloc(ncols, elem_size);
       if (tmp[i] == NULL) {
           for(j = 0; j < i; ++j) free(tmp[j]);
+          return NULL;
+      }
+  }
+  return tmp;
+}
+
+void** realloc_darray(void **old_arr, size_t nrows, size_t ncols, size_t old_nrows, size_t elem_size) {
+  void **tmp;
+  if (old_arr == NULL) {tmp = malloc_darray(nrows, ncols, elem_size); return tmp;}
+
+  if (nrows == 0 || ncols == 0) {
+      free_darray(old_nrows, old_arr);
+      return NULL;
+  }
+
+  size_t i, j;
+  if (old_nrows > nrows) {
+      for (i = 0; i < old_nrows - nrows; ++i) free(old_arr[old_nrows - 1 - i]);
+  }
+
+  tmp = realloc(old_arr, nrows * sizeof(void*)); if (tmp == NULL) return NULL;
+  old_arr = tmp;
+
+  for(i = 0; i < nrows; ++i) {
+      tmp[i] = realloc(old_arr[i], ncols * elem_size);
+      if (tmp[i] == NULL) {
+          for(j = 0; j < i; ++j) free(tmp[i]);
           return NULL;
       }
   }
@@ -161,4 +192,142 @@ int tfprintf(FILE *fout, char *msg, ...) {
   return -1;
 }
 
+char * strapp(char *dest, char *scr) {
+  if (dest == NULL || scr == NULL) return NULL;
 
+  size_t buf_s = strlen(dest) + strlen(scr) + 1; // +1 for /0 character
+  char *result = (char *) realloc(dest, buf_s);
+  if (result == NULL) return NULL;
+  memcpy(&result[strlen(result)], scr, strlen(scr));
+  result[buf_s -1] = '\0';
+  return result;
+}
+
+int fill_darray(void **darr, size_t row_from, size_t row_to, size_t col_from, size_t col_to, void *val, size_t len) {
+  if (row_from == 0 || col_from == 0) return -1;
+  if (row_from > row_to || col_from > col_to) return -2;
+  if (val == NULL) return -3;
+  size_t i,j;
+  for (i=row_from -1 ; i < row_to; ++i) {
+      for (j=col_from -1; j < col_to; ++j) {
+          //memcpy(&darr[i][j], val, len); - WRONG WAY!!! one cannot index void arrays, as the value of shift for the second index is determined by the type of array and for void it is unknown. Shift for the first index is standard and irrelevant of underlying type, as it is pointer. Size of pointer is the same for all the types the pointer may refer to.
+          memcpy(*(darr + i) + j*len, val, len);
+      }
+  }
+  return 0;
+}
+
+static void __DArray_destroy(DArray *self) {
+  if (self == NULL) return;
+  free(self->__fill_val);
+  if (self->__data_allocated) free_darray(self->rown, self->data);
+  free(self);
+}
+
+static int __DArray_addcol(DArray *self, u_int32_t n) {
+
+  int rv;
+  void **rdata;
+  if (n == 0) return 0;
+
+  if (self->rown == 0) {
+      rdata = realloc_darray(self->data, self->rown + 1, self->coln + n, self->rown, self->__elem_size);
+      self->rown += 1;
+  }
+  else rdata = realloc_darray(self->data, self->rown, self->coln + n, self->rown, self->__elem_size);
+  if (rdata == NULL) return -1;
+
+  self->data = rdata;
+  if (!self->__data_allocated) self->__data_allocated = 1;
+  if (self->__fill_val == NULL) { // if not specified, fill with zeros
+      char *tmp_val = (char *) malloc(self->__elem_size); if (tmp_val == NULL) return -2;
+      memset(tmp_val, 0, self->__elem_size);
+      rv = fill_darray(self->data, 1,  self->rown, self->coln + 1, self->coln + n, tmp_val, self->__elem_size);
+      free(tmp_val);
+  }
+  else rv = fill_darray(self->data, 1,  self->rown, self->coln + 1, self->coln + n, self->__fill_val, self->__elem_size);
+
+  if (rv < 0) return -3;
+  self->coln += n;
+  return 0;
+}
+
+static int __DArray_addrow(DArray *self, u_int32_t n) {
+
+  int rv;
+  void **rdata;
+  if (n == 0) return 0;
+
+  if (self->coln == 0) {
+      rdata = realloc_darray(self->data, self->rown + n, self->coln + 1, self->rown, self->__elem_size);
+      self->coln += 1;
+  }
+  else rdata = realloc_darray(self->data, self->rown + n, self->coln, self->rown, self->__elem_size);
+  if (rdata == NULL) return -1;
+
+  self->data = rdata;
+  if (!self->__data_allocated) self->__data_allocated = 1;
+  if (self->__fill_val == NULL) { // if not specified, fill with zeros
+        char *tmp_val = (char *) malloc(self->__elem_size); if (tmp_val == NULL) return -2;
+        memset(tmp_val, 0, self->__elem_size);
+        rv = fill_darray(self->data, self->rown + 1,  self->rown + n, 1, self->coln, tmp_val, self->__elem_size);
+        free(tmp_val);
+    }
+    else rv = fill_darray(self->data, self->rown + 1,  self->rown + n, 1, self->coln, self->__fill_val, self->__elem_size);
+
+  if (rv < 0) return -3;
+  self->rown += n;
+  return 0;
+}
+
+DArray * new_darray(size_t coln, size_t rown, size_t elem_size, void *fillval ) {
+
+  if (elem_size == 0) return NULL;
+
+  DArray *darr = malloc(sizeof(DArray));
+  if (darr == NULL) return NULL;
+
+  /* basic init */
+  darr->__fill_val = NULL;
+  darr->data = NULL;
+
+  darr->coln = coln;
+  darr->rown = rown;
+
+  if (fillval == NULL) {
+      darr->__fill_val = NULL;
+  } else {
+      darr->__fill_val = malloc(elem_size);
+      if (darr->__fill_val == NULL) goto err_clnup;
+      memcpy(darr->__fill_val, fillval, elem_size);
+  }
+
+  if (coln != 0 && rown != 0) {
+      if (darr->__fill_val == NULL) {
+          darr->data = calloc_darray(darr->rown, darr->coln, elem_size); // fill with zeros by default
+          if (darr->data == NULL) goto err_clnup;
+      } else {
+          darr->data = malloc_darray(darr->rown, darr->coln, elem_size);
+          if (darr->data == NULL) goto err_clnup;
+          if (fill_darray(darr->data, 1,  darr->rown, 1, darr->coln, fillval, elem_size) < 0) goto err_clnup;
+      }
+
+      darr->__data_allocated = 1;
+  } else {
+      darr->__data_allocated = 0;
+  }
+
+
+  darr->__elem_size = elem_size;
+  darr->destroy = __DArray_destroy;
+  darr->add_col = __DArray_addcol;
+  darr->add_row = __DArray_addrow;
+
+  return darr;
+
+  err_clnup:
+  free(darr->__fill_val);
+  if (darr->data) free_darray(rown, darr->data);
+  free(darr);
+  return NULL;
+}

@@ -30,13 +30,20 @@
 #define TSDB_DG_FINE_TS 2
 #define MAX_PATH_LEN 50
 #define COMMENT_CHAR '#'
-#define NL_CHAR '\n'
+#define LF_CHAR '\n'
+#define CR_CHAR '\r'
 
 typedef struct {
     int verbose_lvl;
     u_int8_t ronly;
     char *pfile;
 } set_args;
+
+typedef struct {
+  size_t crow;
+  size_t ccol;
+  DArray *storage;
+} csv_tracker;
 
 static void help(int val) {
 
@@ -98,7 +105,7 @@ int metrics_create(char ***metrics_arr) {
   if (!metrics) goto err_cleanup;
 
   for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) {
-      if (sprintf(metrics[cnt], "m-%lu", cnt +1) < 0) goto err_cleanup;
+      if (sprintf(metrics[cnt], "m-%u", cnt +1) < 0) goto err_cleanup;
   }
 
   *metrics_arr = metrics;
@@ -149,40 +156,93 @@ int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoc
   return 0;
 }
 
-int parse_pattern(char **str_file, int64_t ***values_p) {
-  /* **values_p are allocated here */
-  /* **str_file is deallocated here after processing */ //TODO
+void print_pattern(DArray *p) {
+  size_t i, j;
+  if (p == NULL) exit(1);
+  if (p->__data_allocated == 0) exit(2);
+
+  for (i = 0; i < p->rown; ++i) {
+      for (j = 0; j < p->coln; ++j) {
+          printf("%ld ", ((int64_t **)p->data)[i][j]);
+      }
+      printf("\n");
+  }
+
+}
+
+void csv_cb_field(void *field, size_t field_size, void *ext_data) {
+  //parsing: strtol()
+  long int pval;
+  csv_tracker *arg = (csv_tracker *) ext_data;
+  if (arg->ccol == 0) arg->storage->add_row(arg->storage, 1);
+  arg->ccol ++;
+  if (arg->ccol > arg->storage->coln) arg->storage->add_col(arg->storage, 1);
+  if (field != NULL) { //if field is not empty
+      errno = 0;
+      pval = strtol(field, NULL, 0);
+      if (errno) printf("%d ERR: converting str into long integer", __LINE__);
+      ((int64_t **)arg->storage->data)[arg->crow -1][arg->ccol -1] = pval;
+  }
+}
+
+void csv_cb_record(int end_record_char, void *ext_data) {
+  assert_true(end_record_char != CSV_CR && end_record_char != -1);
+  csv_tracker *arg = (csv_tracker *) ext_data;
+  arg->crow ++;
+  arg->ccol = 0;
+}
+
+int parse_pattern(char *str_file, DArray *pattern) {
+  /* *pattern is allocated externally */
+  /* *str_file is deallocated externally */
+  csv_tracker csvt;
+  csvt.ccol = 0; //column == 0 means the the current row must be allocated in the storage
+  csvt.crow = 1;
+  csvt.storage = pattern;
+
   struct csv_parser p;
-  csv_init(&p, 0);
+  size_t rv;
+  csv_init(&p, CSV_APPEND_NULL | CSV_EMPTY_IS_NULL);
+  rv = csv_parse(&p, str_file, strlen(str_file), csv_cb_field, csv_cb_record, &csvt);
   csv_free(&p);
+  if (rv != strlen(str_file)) {printf("ERR: csv_parse processed too few bytes\n"); return -1;}
+  assert_true(pattern->coln == 11 && pattern->rown == 7); // debug for current pattern
+  print_pattern(pattern); //for debug only
   return 0;
 }
 
-void read_pattern(set_args *args, int64_t ***values_p) {
+void read_fpattern(set_args *args, DArray *pattern) {
   FILE *pf;
   char mode = 'r';
   char *fline = NULL;
-  char **str_file_o = NULL; //read file without comment and empty string lines
-  char **str_file_n = NULL;
-  size_t buf_size = MAX_PATH_LEN, metrics_num = 0;
+  char *str_file_o = NULL; //read file without comment and empty string lines
+  char *str_file_n = NULL;
+  size_t buf_size = MAX_PATH_LEN; //, metrics_num = 0;
   ssize_t char_read;
+
+  str_file_o = (char *) malloc(sizeof(char));
+  if (str_file_o == NULL) exit(7);
+  *str_file_o = '\0'; //empty string
 
   if ((pf = fopen(args->pfile, &mode)) == NULL) {
       printf("Error opening file %s for reading\n", args->pfile);
       exit(1);
   }
 
+  /* Read off the file into one long string omitting comment strings (csv parser does not support comment strings)*/
   while (1) {
       if ((fline = (char *) malloc(MAX_PATH_LEN * sizeof(char))) == NULL) exit(4);
       char_read = getline(&fline, &buf_size, pf);
       if (buf_size > MAX_PATH_LEN) buf_size = MAX_PATH_LEN; // buf was increased due to long line
       if (char_read == 0) {free(fline); continue;}
       if (char_read <  0) {free(fline); break;}
-      if (*fline == COMMENT_CHAR || *fline == NL_CHAR) {free(fline); continue;} //TODO use predefined NL char
-      metrics_num++;
-      str_file_n = (char **) realloc(str_file_o, metrics_num * sizeof(char *)); if (str_file_n == NULL) exit(5);
+      if (*fline == COMMENT_CHAR ||
+          *fline == LF_CHAR ||
+          *fline == CR_CHAR) {free(fline); continue;} //ignore a line it it start with # or \n or \r
+      //metrics_num++; //TODO make use of it
+      str_file_n = strapp(str_file_o, fline); if (str_file_n == NULL) exit(5);
       str_file_o = str_file_n;
-      str_file_o[metrics_num - 1] = fline;
+      free(fline);
   }
 
   if (!feof(pf)) {
@@ -196,7 +256,9 @@ void read_pattern(set_args *args, int64_t ***values_p) {
       exit(3);
   }
 
-  if (parse_pattern(str_file_o, values_p) < 0) exit(6);
+  if (parse_pattern(str_file_o, pattern) < 0) exit(6);
+  free(str_file_o);
+  exit(0);
 }
 
 int create_pattern(int64_t ***values_p) {
@@ -228,7 +290,7 @@ int create_pattern(int64_t ***values_p) {
 }
 
 int writing_cycle_engage(tsdbw_handle *db_bundle, int64_t **values, u_int32_t *epoch_glob_cnt) {
-
+//TODO rewrite for brief pattern
     u_int32_t epoch_cnt = 0, cur_epoch = time(NULL);
     u_int32_t last_epoch;
 
@@ -405,7 +467,7 @@ int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *sleep_time) {
   /** Comparing anticipated and actual results of the TSDB query **/
   for(i = 0; i <  TSDB_DG_METRIC_NUM; ++i) {
       for(j = 0; j <  num_epochs; ++j) {
-          printf("Check. met %d, ep %d: val %d == %d\n", i+1, j+1, rep->tuples[i][j].value, values_an[i][j]);
+          printf("Check. met %d, ep %d: val %ld == %ld\n", i+1, j+1, rep->tuples[i][j].value, values_an[i][j]);
           assert_true(rep->tuples[i][j].value == values_an[i][j]);
           assert_true(rep->tuples[i][j].epoch == epoch_list_an[j]);
       }
@@ -451,16 +513,21 @@ u_int8_t dbs_exist(const char **db_paths) {
   return 1;
 }
 
-void test_write(tsdbw_handle *db_bundle, const char **db_paths) {
+void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) {
   int rv;
-  int64_t **values = NULL;
+  //TODO refactor int64_t **values = NULL;
+  int64_t **values = NULL; //TODO delete it
+  DArray *pattern;
   u_int32_t sleep_time, epoch_num = 0, fine_timestep;
-
-  /* Create test pattern of events */
-  rv = create_pattern(&values); assert_true(rv == 0);
 
   /* Open DBs */
   rv = open_dbs(db_bundle, db_paths, 'w'); assert_true(rv == 0);
+
+  /* Create test pattern of events */
+  //rv = create_pattern(&values); assert_true(rv == 0);
+  pattern = new_darray(0, 0, sizeof(db_bundle->db_hs[TSDBW_FINE]->unknown_value), &db_bundle->db_hs[TSDBW_FINE]->unknown_value);
+  assert_true(pattern != NULL);
+  read_fpattern(args, pattern);
 
   fine_timestep = db_bundle->db_hs[TSDBW_FINE]->slot_duration;
   sleep_time = 2 * db_bundle->db_hs[TSDBW_COARSE]->slot_duration;; // 2 epochs of the coarse TSDB
@@ -533,7 +600,7 @@ int main(int argc, char *argv[]) {
   db_paths[2] = "./DBs/c_db.tsdb";
 
   if (! dbs_exist(db_paths) && args.ronly == 1) return 2;
-  if (args.ronly == 0) test_write(& db_bundle, db_paths);
+  if (args.ronly == 0) test_write(&args, & db_bundle, db_paths);
 
   test_read(& db_bundle, db_paths);
 
