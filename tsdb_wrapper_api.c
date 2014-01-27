@@ -552,6 +552,7 @@ void tsdbw_close(tsdbw_handle *handle) {
   }
 
   /* Release memory allocated for those DBs*/
+  for (i = 0; i < TSDBW_DB_NUM; ++i ) free(handle->db_hs[i]);
   free_dbhs(handle->db_hs);
 
   /* Release memory allocated for accums */

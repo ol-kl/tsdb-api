@@ -1,4 +1,4 @@
-CC           = gcc -g
+CC           = gcc -g -O0
 CFLAGS       = -Wall -I. -I./unit_tests -DSEATEST_EXIT_ON_FAIL
 LDFLAGS      = -L /opt/local/lib
 SYSLIBS      = -ldb -lcsv

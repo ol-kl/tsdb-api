@@ -157,6 +157,11 @@ void** realloc_darray(void **old_arr, size_t nrows, size_t ncols, size_t old_nro
   tmp = realloc(old_arr, nrows * sizeof(void*)); if (tmp == NULL) return NULL;
   old_arr = tmp;
 
+  /* set added pointers to NULL to trigger malloc-like behaviour when realloc operates on them*/
+  if (nrows > old_nrows) {
+      for (i = old_nrows; i < nrows; ++i) old_arr[i] = NULL;
+  }
+
   for(i = 0; i < nrows; ++i) {
       tmp[i] = realloc(old_arr[i], ncols * elem_size);
       if (tmp[i] == NULL) {
@@ -220,8 +225,44 @@ int fill_darray(void **darr, size_t row_from, size_t row_to, size_t col_from, si
 static void __DArray_destroy(DArray *self) {
   if (self == NULL) return;
   free(self->__fill_val);
+  free(self->__col_p);
   if (self->__data_allocated) free_darray(self->rown, self->data);
   free(self);
+}
+
+static void __DArray_wipedata(DArray *self) {
+  if (self == NULL) return;
+  free(self->__col_p);
+  if (self->__data_allocated) free_darray(self->rown, self->data);
+  self->rown = 0;
+  self->coln = 0;
+  self->data = NULL;
+  self->__data_allocated = 0;
+}
+
+static void* __DArray_getrow(DArray *self, u_int32_t n) {
+  /* Start counting since 0, performing deep copy of the column for external transparency */
+  if (n >= self->rown) return NULL;
+
+  return self->data[n];
+}
+
+static void* __DArray_getcol(DArray *self, u_int32_t n) {
+  /* Start counting since 0, performing deep copy of the column for external transparency */
+  if (n >= self->coln) return NULL;
+
+  size_t i;
+  void *new_col_p = realloc(self->__col_p, self->rown * self->__elem_size);
+  if (new_col_p == NULL) return NULL;
+  self->__col_p = new_col_p;
+
+  for (i = 0; i < self->rown; ++i) {
+      memcpy(self->__col_p + i * self->__elem_size,
+          self->data[i] + n * self->__elem_size,
+          self->__elem_size);
+  }
+
+  return self->__col_p;
 }
 
 static int __DArray_addcol(DArray *self, u_int32_t n) {
@@ -249,6 +290,20 @@ static int __DArray_addcol(DArray *self, u_int32_t n) {
 
   if (rv < 0) return -3;
   self->coln += n;
+  return 0;
+}
+
+static int __DArray_appcol(DArray *self, void *cdata, size_t cdata_num_elem) {
+  /* Responsibility that *cdata is of the same type as self->data is on the programmer */
+  if (self->rown != cdata_num_elem ) return -1;
+  self->add_col(self, 1);
+
+  size_t i;
+  for (i = 0; i < cdata_num_elem; ++i) {
+      memcpy(self->data[i] + (self->coln -1) * self->__elem_size,
+          cdata + i * self->__elem_size,
+          self->__elem_size);
+  }
   return 0;
 }
 
@@ -280,7 +335,7 @@ static int __DArray_addrow(DArray *self, u_int32_t n) {
   return 0;
 }
 
-DArray * new_darray(size_t coln, size_t rown, size_t elem_size, void *fillval ) {
+DArray * new_darray(size_t rown, size_t coln, size_t elem_size, void *fillval ) {
 
   if (elem_size == 0) return NULL;
 
@@ -319,10 +374,14 @@ DArray * new_darray(size_t coln, size_t rown, size_t elem_size, void *fillval ) 
 
 
   darr->__elem_size = elem_size;
+  darr->__col_p = NULL;
   darr->destroy = __DArray_destroy;
   darr->add_col = __DArray_addcol;
   darr->add_row = __DArray_addrow;
-
+  darr->wipe_data = __DArray_wipedata;
+  darr->app_col = __DArray_appcol;
+  darr->get_col = __DArray_getcol;
+  darr->get_row = __DArray_getrow;
   return darr;
 
   err_clnup:

@@ -160,10 +160,11 @@ void print_pattern(DArray *p) {
   size_t i, j;
   if (p == NULL) exit(1);
   if (p->__data_allocated == 0) exit(2);
+  printf("Pattern to be written [metric vals][epochs]:\n");
 
   for (i = 0; i < p->rown; ++i) {
       for (j = 0; j < p->coln; ++j) {
-          printf("%ld ", ((int64_t **)p->data)[i][j]);
+          printf("%2ld ", ((int64_t **)p->data)[i][j]);
       }
       printf("\n");
   }
@@ -171,7 +172,7 @@ void print_pattern(DArray *p) {
 }
 
 void csv_cb_field(void *field, size_t field_size, void *ext_data) {
-  //parsing: strtol()
+
   long int pval;
   csv_tracker *arg = (csv_tracker *) ext_data;
   if (arg->ccol == 0) arg->storage->add_row(arg->storage, 1);
@@ -192,13 +193,42 @@ void csv_cb_record(int end_record_char, void *ext_data) {
   arg->ccol = 0;
 }
 
-int parse_pattern(char *str_file, DArray *pattern) {
+int pattern_consistent(DArray *p) {
+  if (p->rown == 0) return 0;
+  if (p->rown == 1) return 1;
+
+  size_t i = p->rown - 1;
+  for(i = p->rown - 1; i > 0; --i){
+      if (((int64_t **)p->data)[0][i-1] >= ((int64_t **)p->data)[0][i]) break;
+  }
+
+  return i == 0;
+}
+
+DArray * inflate_pattern(DArray *p) {
+  /* Newly allocated and inflated version of DArray is returned, source DArray *p is deallocated */
+  if (p == NULL) return NULL;
+
+  DArray *inf = new_darray(p->rown -1, ((int64_t **)p->data)[0][p->coln -1], p->__elem_size, p->__fill_val); // -1 row to remove epochs, as its number is clear from number of columns
+  if (inf == NULL) return NULL;
+
+  size_t ci, ri;
+  for (ci = 0; ci < p->coln; ++ci) {
+      for (ri = 0; ri < p->rown - 1; ++ri) {
+          ((int64_t **)inf->data)[ri][((int64_t **)p->data)[0][ci] -1] = ((int64_t **)p->data)[ri+1][ci];
+      }
+  }
+  p->destroy(p);
+  return inf;
+}
+
+int parse_pattern(char *str_file, DArray **pattern) {
   /* *pattern is allocated externally */
   /* *str_file is deallocated externally */
   csv_tracker csvt;
-  csvt.ccol = 0; //column == 0 means the the current row must be allocated in the storage
-  csvt.crow = 1;
-  csvt.storage = pattern;
+  csvt.ccol = 0; // current column == 0 means the the current row must be allocated in the storage
+  csvt.crow = 1; // current row
+  csvt.storage = *pattern;
 
   struct csv_parser p;
   size_t rv;
@@ -206,25 +236,29 @@ int parse_pattern(char *str_file, DArray *pattern) {
   rv = csv_parse(&p, str_file, strlen(str_file), csv_cb_field, csv_cb_record, &csvt);
   csv_free(&p);
   if (rv != strlen(str_file)) {printf("ERR: csv_parse processed too few bytes\n"); return -1;}
-  assert_true(pattern->coln == 11 && pattern->rown == 7); // debug for current pattern
-  print_pattern(pattern); //for debug only
+  assert_true((*pattern)->coln == 11 && (*pattern)->rown == 7); // debug for current pattern
+//  print_pattern(*pattern); //for debug only
+  if (!pattern_consistent(*pattern)) {printf("ERR: pattern first row must have increasing numbers\n"); return -1;}
+  *pattern = inflate_pattern(*pattern);
+  print_pattern(*pattern); //for debug only
   return 0;
 }
 
-void read_fpattern(set_args *args, DArray *pattern) {
-  FILE *pf;
+void read_fpattern(set_args *args, DArray **pattern) {
+  FILE *pf = NULL;
   char mode = 'r';
   char *fline = NULL;
   char *str_file_o = NULL; //read file without comment and empty string lines
   char *str_file_n = NULL;
   size_t buf_size = MAX_PATH_LEN; //, metrics_num = 0;
-  ssize_t char_read;
+  ssize_t char_read = 0;
 
   str_file_o = (char *) malloc(sizeof(char));
   if (str_file_o == NULL) exit(7);
   *str_file_o = '\0'; //empty string
 
-  if ((pf = fopen(args->pfile, &mode)) == NULL) {
+  pf = fopen(args->pfile, &mode);
+  if (pf == NULL) {
       printf("Error opening file %s for reading\n", args->pfile);
       exit(1);
   }
@@ -258,39 +292,38 @@ void read_fpattern(set_args *args, DArray *pattern) {
 
   if (parse_pattern(str_file_o, pattern) < 0) exit(6);
   free(str_file_o);
-  exit(0);
+//  exit(0);
 }
 
-int create_pattern(int64_t ***values_p) {
-  /* values[metric][epoch] */
+//int create_pattern(int64_t ***values_p) {
+//  /* values[metric][epoch] */
+//
+//  int64_t **values;
+//  u_int32_t i, j;
+//
+//  /* Allocate memory */
+//  values = (int64_t **)calloc_darray(TSDB_DG_METRIC_NUM, TSDB_DG_EPOCHS_NUM, sizeof(int64_t));
+//  if (values == NULL) {*values_p = NULL; return -1;}
+//
+//  /* Creating a writing template, 0 - no value to write */
+//  for (i = 1; i < TSDB_DG_METRIC_NUM + 1; ++i) { //epochs i = 1:6
+//      for (j = 1; j < i + 1; ++j ) { //metrics            j = 1:1, 1:2, ..., 1:6
+//          values[j-1][i-1] = 10 * j;
+//      }
+//  }
+//
+//  values[3-1][2-1] = 30;
+//  values[3-1][16-1] = 30;
+//  values[1-1][17-1] = 10;
+//  values[6-1][18-1] = 60;
+//  values[4-1][19-1] = 40;
+//  values[2-1][20-1] = 20;
+//
+//  *values_p = values;
+//  return 0;
+//}
 
-  int64_t **values;
-  u_int32_t i, j;
-
-  /* Allocate memory */
-  values = (int64_t **)calloc_darray(TSDB_DG_METRIC_NUM, TSDB_DG_EPOCHS_NUM, sizeof(int64_t));
-  if (values == NULL) {*values_p = NULL; return -1;}
-
-  /* Creating a writing template, 0 - no value to write */
-  for (i = 1; i < TSDB_DG_METRIC_NUM + 1; ++i) { //epochs i = 1:6
-      for (j = 1; j < i + 1; ++j ) { //metrics            j = 1:1, 1:2, ..., 1:6
-          values[j-1][i-1] = 10 * j;
-      }
-  }
-
-  values[3-1][2-1] = 30;
-  values[3-1][16-1] = 30;
-  values[1-1][17-1] = 10;
-  values[6-1][18-1] = 60;
-  values[4-1][19-1] = 40;
-  values[2-1][20-1] = 20;
-
-  *values_p = values;
-  return 0;
-}
-
-int writing_cycle_engage(tsdbw_handle *db_bundle, int64_t **values, u_int32_t *epoch_glob_cnt) {
-//TODO rewrite for brief pattern
+int writing_cycle_engage(tsdbw_handle *db_bundle, DArray *vals, u_int32_t *epoch_glob_cnt) {
     u_int32_t epoch_cnt = 0, cur_epoch = time(NULL);
     u_int32_t last_epoch;
 
@@ -302,13 +335,13 @@ int writing_cycle_engage(tsdbw_handle *db_bundle, int64_t **values, u_int32_t *e
             epoch_cnt++; (*epoch_glob_cnt) ++;
             tfprintf(stdout,"Epoch %u. Writing... ", *epoch_glob_cnt);
 
-            if (write_pattern_epoch(db_bundle, values, epoch_cnt -1, TSDB_DG_METRIC_NUM, 1)) {
+            if (write_pattern_epoch(db_bundle, (int64_t **)vals->data, epoch_cnt -1, vals->rown, 1)) {
                 printf("Failed to write testing garbage\n");
                 tsdbw_close(db_bundle);
                 return -1;
             }
 
-            if (write_pattern_epoch(db_bundle, values, epoch_cnt -1, TSDB_DG_METRIC_NUM, 0)) {
+            if (write_pattern_epoch(db_bundle, (int64_t **)vals->data, epoch_cnt -1, vals->rown, 0)) {
                 printf("Failed to write pattern\n");
                 tsdbw_close(db_bundle);
                 return -1;
@@ -393,88 +426,117 @@ int prepare_args_q_test1(tsdbw_handle *db_bundle, q_request_t *req) {
   return 0;
 }
 
-int verify_reply_test1(tsdb_handler *h, q_reply_t *rep, u_int32_t *sleep_time) {
+int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep, u_int32_t *sleep_time) {
 
   /* form list of anticipated epochs */
 
   /* 3 from extra requested range:
    * 2 before the first one and 1 after the last one */
   int i, j, rv;
+  DArray *pattern, *anvals;
+  pattern = new_darray(0, 0, sizeof(h->unknown_value), &h->unknown_value);
+  assert_true(pattern != NULL);
+  read_fpattern(args, &pattern);
+
   u_int32_t ep_afront_num = 2, ep_trail_num = 1, ep_sleep = *sleep_time/ h->slot_duration;
-  u_int32_t num_epochs = TSDB_DG_EPOCHS_NUM * 2 + ep_sleep + ep_afront_num + ep_trail_num; // == 48
+  u_int32_t num_epochs = pattern->coln * 2 + ep_sleep + ep_afront_num + ep_trail_num; // == 48
   assert_true(num_epochs == rep->epochs_num_res);
 
-  u_int32_t *epoch_list_an = (u_int32_t *) malloc(num_epochs * sizeof *epoch_list_an); //anticipated epochs
+  u_int32_t *anepochs = (u_int32_t *) malloc(num_epochs * sizeof *anepochs); //anticipated epochs
+  assert_true(anepochs != NULL);
 
   /** Creating anticipated epochs **/
   /* First anticipated epoch */
-  epoch_list_an[0] =  h->epoch_list[0] - ep_afront_num * h->slot_duration;
+  anepochs[0] =  h->epoch_list[0] - ep_afront_num * h->slot_duration;
 
   /* Rest of them */
   for(i = 1; i < num_epochs; ++i) {
-      epoch_list_an[i] = epoch_list_an[0]  + i * h->slot_duration;
+      anepochs[i] = anepochs[0]  + i * h->slot_duration;
   }
 
   /** Creating anticipated values **/
-  int64_t **values_chunk_an;
-  rv = create_pattern(& values_chunk_an); assert_true(rv == 0);
-  int64_t **values_an = (int64_t **) malloc_darray(TSDB_DG_METRIC_NUM, num_epochs, sizeof(int64_t)); assert_true(values_an != NULL);
+  //TODO refactor **values_chunk_an
+
+  //int64_t **values_chunk_an;
+  // rv = create_pattern(& values_chunk_an); assert_true(rv == 0);
+  //int64_t **values_an = (int64_t **) malloc_darray(TSDB_DG_METRIC_NUM, num_epochs, sizeof(int64_t)); assert_true(values_an != NULL);
 
   /** Creating anticipated values **/
   /* First two epochs for all metrics must have default values
    * as they are not contained in the TSDB and were requested this
    * way deliberately */
-  u_int32_t epochs_done = 0;
-  for(i = 0; i <  ep_afront_num; ++i) {
-      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
-          values_an[j][i] = h->unknown_value;
-      }
-  }
-  epochs_done = i;
-  assert_true(epochs_done == ep_afront_num);
+  anvals = new_darray(pattern->rown, 0, sizeof(h->unknown_value), &h->unknown_value);
+  assert_true(anvals != NULL);
+
+  anvals->add_col(anvals, ep_afront_num);
+
+//  u_int32_t epochs_done = 0;
+//  for(i = 0; i <  ep_afront_num; ++i) {
+//      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
+//          values_an[j][i] = h->unknown_value;
+//      }
+//  }
+//  epochs_done = i;
+//  assert_true(epochs_done == ep_afront_num);
+  assert_true(anvals->coln == ep_afront_num);
 
   /* Then the pattern follows */
-  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
-  }
-  epochs_done += TSDB_DG_EPOCHS_NUM;
-  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM);
+  for (i = 0; i < pattern->coln; ++i) anvals->app_col(anvals, pattern->get_col(pattern, i), pattern->rown);
+  assert_true(anvals->coln == ep_afront_num + TSDB_DG_EPOCHS_NUM);
+
+//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
+//      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
+//  }
+//  epochs_done += TSDB_DG_EPOCHS_NUM;
+//  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM);
 
   /* Then the outage phase */
-  for(i = 0; i <  ep_sleep; ++i) {
-      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
-          values_an[j][epochs_done + i] = h->unknown_value;
-      }
-  }
-  epochs_done += *sleep_time/ h->slot_duration;
-  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM + ep_sleep);
+  rv = anvals->add_col(anvals, ep_sleep);
+  assert_true(rv == 0);
+  assert_true(anvals->coln == ep_afront_num + TSDB_DG_EPOCHS_NUM + ep_sleep);
+
+//  for(i = 0; i <  ep_sleep; ++i) {
+//      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
+//          values_an[j][epochs_done + i] = h->unknown_value;
+//      }
+//  }
+//  epochs_done += *sleep_time/ h->slot_duration;
+//  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM + ep_sleep);
 
   /* Then the same pattern once more */
-  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
-  }
-  epochs_done += TSDB_DG_EPOCHS_NUM;
-  assert_true(epochs_done == ep_afront_num + 2*TSDB_DG_EPOCHS_NUM + ep_sleep);
-  free_darray(TSDB_DG_METRIC_NUM, (void **)values_chunk_an);
+  for (i = 0; i < pattern->coln; ++i) anvals->app_col(anvals, pattern->get_col(pattern, i), pattern->rown);
+  assert_true(anvals->coln == ep_afront_num + 2*TSDB_DG_EPOCHS_NUM + ep_sleep);
+  pattern->destroy(pattern);
+
+//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
+//      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
+//  }
+//  epochs_done += TSDB_DG_EPOCHS_NUM;
+//  assert_true(epochs_done == ep_afront_num + 2*TSDB_DG_EPOCHS_NUM + ep_sleep);
+//  free_darray(TSDB_DG_METRIC_NUM, (void **)values_chunk_an);
 
   /* Finally one trailing epoch with default data, as it does not exist in the TSDB */
-  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-      values_an[i][epochs_done] = h->unknown_value;
-  }
-  epochs_done += ep_trail_num;
-  assert_true(epochs_done == num_epochs);
+  anvals->add_col(anvals, ep_trail_num);
+  assert_true(anvals->coln == num_epochs);
+
+//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
+//      values_an[i][epochs_done] = h->unknown_value;
+//  }
+//  epochs_done += ep_trail_num;
+//  assert_true(epochs_done == num_epochs);
 
   /** Comparing anticipated and actual results of the TSDB query **/
-  for(i = 0; i <  TSDB_DG_METRIC_NUM; ++i) {
-      for(j = 0; j <  num_epochs; ++j) {
-          printf("Check. met %d, ep %d: val %ld == %ld\n", i+1, j+1, rep->tuples[i][j].value, values_an[i][j]);
-          assert_true(rep->tuples[i][j].value == values_an[i][j]);
-          assert_true(rep->tuples[i][j].epoch == epoch_list_an[j]);
+  for(i = 0; i <  anvals->rown; ++i) {
+      for(j = 0; j <  anvals->coln; ++j) {
+          printf("Check. met %d, ep %d: val %ld == %ld\n", i+1, j+1, rep->tuples[i][j].value, ((int64_t**)anvals->data)[i][j]);
+          assert_true(rep->tuples[i][j].value == ((int64_t**)anvals->data)[i][j]);
+          assert_true(rep->tuples[i][j].epoch == anepochs[j]);
       }
   }
 
-  free(epoch_list_an);
-  free_darray(TSDB_DG_METRIC_NUM, (void **)values_an);
+  free(anepochs);
+  anvals->destroy(anvals);
+  //free_darray(TSDB_DG_METRIC_NUM, (void **)values_an);
   return 0;
 }
 
@@ -515,8 +577,7 @@ u_int8_t dbs_exist(const char **db_paths) {
 
 void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) {
   int rv;
-  //TODO refactor int64_t **values = NULL;
-  int64_t **values = NULL; //TODO delete it
+
   DArray *pattern;
   u_int32_t sleep_time, epoch_num = 0, fine_timestep;
 
@@ -527,7 +588,7 @@ void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) 
   //rv = create_pattern(&values); assert_true(rv == 0);
   pattern = new_darray(0, 0, sizeof(db_bundle->db_hs[TSDBW_FINE]->unknown_value), &db_bundle->db_hs[TSDBW_FINE]->unknown_value);
   assert_true(pattern != NULL);
-  read_fpattern(args, pattern);
+  read_fpattern(args, &pattern);
 
   fine_timestep = db_bundle->db_hs[TSDBW_FINE]->slot_duration;
   sleep_time = 2 * db_bundle->db_hs[TSDBW_COARSE]->slot_duration;; // 2 epochs of the coarse TSDB
@@ -535,7 +596,7 @@ void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) 
   /* Writing epochs according to pattern once epochs in all TSDBs are aligned */
   wait_alignment(db_bundle);
   rv = set_timers_norm(db_bundle, time(NULL));  assert_true(rv == 0);
-  rv = writing_cycle_engage(db_bundle, values, &epoch_num); assert_true(rv == 0);
+  rv = writing_cycle_engage(db_bundle, pattern, &epoch_num); assert_true(rv == 0);
   tsdbw_close(db_bundle); printf("DBs are closed\n");
 
   /* Emulate outage time for DB */
@@ -545,9 +606,9 @@ void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) 
   rv = open_dbs(db_bundle, db_paths, 'a'); assert_true(rv == 0);
 
   /* Commence writing duty cycle */
-  rv = writing_cycle_engage(db_bundle, values, &epoch_num); assert_true(rv == 0);
+  rv = writing_cycle_engage(db_bundle, pattern, &epoch_num); assert_true(rv == 0);
   tsdbw_close(db_bundle);
-  free_darray(TSDB_DG_METRIC_NUM, (void **) values);
+  pattern->destroy(pattern);
 
   /* Reporting the first and last epochs available in fine TSDB */
   rv = open_dbs(db_bundle, db_paths, 'a'); assert_true(rv == 0);
@@ -560,7 +621,7 @@ void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) 
 
 }
 
-void test_read(tsdbw_handle *db_bundle, const char **db_paths) {
+void test_read(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) {
   int rv;
   u_int32_t sleep_time;
 
@@ -573,7 +634,7 @@ void test_read(tsdbw_handle *db_bundle, const char **db_paths) {
   q_reply_t rep;
   rv = prepare_args_q_test1(db_bundle, &req); assert_true(rv == 0);
   rv = tsdbw_query(db_bundle, &req, &rep); assert_true(rv == 0);
-  rv = verify_reply_test1(db_bundle->db_hs[0], &rep, &sleep_time); assert_true(rv == 0);
+  rv = verify_reply_test1(args, db_bundle->db_hs[0], &rep, &sleep_time); assert_true(rv == 0);
 
   reply_data_destroy(&rep);
   metrics_destroy(&req.metrics);
@@ -602,7 +663,7 @@ int main(int argc, char *argv[]) {
   if (! dbs_exist(db_paths) && args.ronly == 1) return 2;
   if (args.ronly == 0) test_write(&args, & db_bundle, db_paths);
 
-  test_read(& db_bundle, db_paths);
+  test_read(&args, & db_bundle, db_paths);
 
   return 0;
 }

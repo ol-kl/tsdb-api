@@ -18,22 +18,27 @@
 
 #define BYTE(X) ((unsigned char *)(X))
 
-typedef struct {
+typedef struct darray DArray;
+
+struct darray{
   void **data;
   void *__fill_val;
+  void *__col_p;
   size_t coln;
   size_t rown;
   u_int8_t __data_allocated;
   size_t __elem_size;
-//  void (* destroy)(DArray *self);
-//  int (*add_col)(DArray *self, u_int32_t n);
-//  int (*add_row)(DArray *self, u_int32_t n);
-  void (* destroy)();
-  int (*add_col)();
-  int (*add_row)();
-} DArray;
+  void (* destroy)(DArray *self);
+  void (* wipe_data)(DArray *self);
+  int (*add_col)(DArray *self, u_int32_t n);
+  int (*app_col)(DArray *self, void *cdata, size_t cdata_num_elem);
+  int (*add_row)(DArray *self, u_int32_t n);
+  void* (*get_col)(DArray *self, u_int32_t n);
+  void* (*get_row)(DArray *self, u_int32_t n);
+};
 
-DArray * new_darray(size_t coln, size_t rown, size_t elem_size, void *fillval );
+/* Create a new DArray struct. *fillval is deep copied. */
+DArray * new_darray(size_t rown, size_t coln, size_t elem_size, void *fillval );
 
 /* check file existence using process real uid, gid */
 int fexist(const char* fname);

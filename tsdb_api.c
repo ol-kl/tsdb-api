@@ -347,6 +347,7 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
     /******/
     free(handler->chunk.data);
     memset(&handler->chunk, 0, sizeof(handler->chunk));
+    handler->chunk.data = NULL;
     handler->chunk.epoch = 0;
     handler->chunk.data_len = 0;
     handler->chunk.new_epoch_flag = 0;
