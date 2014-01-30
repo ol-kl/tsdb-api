@@ -1,5 +1,8 @@
 /*
+ * Modifications are made by
+ *  Oleg Klyudt
  *
+ *ORIGINAL COPYRIGHT:
  *  Copyright (C) 2011 IIT/CNR (http://www.iit.cnr.it/en)
  *                     Luca Deri <deri@ntop.org>
  *

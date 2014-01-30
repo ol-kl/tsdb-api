@@ -1,5 +1,5 @@
 /*
- * test_data_generator.c
+ * test_tsdbwAPI.c
  *
  *  Created on: Dec 5, 2013
  *      Author(s): Oleg Klyudt
@@ -7,7 +7,7 @@
 
 /* This routine has two purposes:
  * 1. Unit testing of TSDB Wrapper API
- * 2. After unit tets completion it launches
+ * 2. After unit test completion it launches
  * data generator and issues writing queries
  * to TSDB Wrapper DB bundle. Another reading
  * routine should be invoked as a separate
@@ -590,6 +590,7 @@ int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep,q_request
 
   free(anepochs);
   anvals->destroy(anvals);
+  pattern->destroy(pattern);
   printf("Done\n");
   return 0;
 }

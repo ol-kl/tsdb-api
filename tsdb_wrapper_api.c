@@ -5,12 +5,19 @@
      Author(s): Oleg Klyudt
  */
 
+/* Things to certainly implement:
+ * 1. open TSDBs in DB_ENV mode to activate internal locking system and enable correct handling of simultaneous writing/reading requests
+ * */
+
 /* Things to implement optionally:
  * 1. Create a local variant of errno, a structure which will report an error type and provide extra info. So that unified error handling can be implemented.
  * 2. Consolidation function should be triggered on a schedule base, not by write requests as of now, as there can be no write requests at all during outage. Implement it as a separate process / thread.
  * 3. Support of values_per_entry > 1 by local functions. Some of them support it already. This however will require implementation of arithmetic for long types (more than int64_t).
  * 4. Syslogging / custom logging to file of all tracing info instead of stdout.
  * 5. Global writing process lock - only one TSDB writing process can be started. Implementation: either through some tsdbw.lock file or using the app specific field DB_ENV->app_private field, where DB_ENV is the Berkeley DB environment handle.
+ * 6. There should be clear distinction between 0 value and unknown value in TSDB, maybe internally and transparently for the user.
+ *    It will make consolidation function more accurate and granular on the consolidated values, query function will be able to
+ *    detect not only missing epochs but also the missing values in existing epochs.
  * */
 
 #include "tsdb_wrapper_api.h"

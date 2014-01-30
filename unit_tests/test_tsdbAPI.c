@@ -1,5 +1,5 @@
 /*
- * test_queryTime.c
+ * test_tsdbAPI.c
  *
  *  Created on: Nov 12, 2013
  *      Author(s): Oleg Klyudt
