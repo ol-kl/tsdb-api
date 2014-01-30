@@ -54,23 +54,23 @@ typedef struct {
 typedef struct {
   tsdb_value *data;
   size_t size; // of data
-  u_int32_t cr_elapsed; //consolidation rounds elapsed on data
-  metrics_t new_metrics; // emptied during each write cycle in a respective consolidated DB
-  time_t last_flush_time; // last sync'ed epoch in the related consolidated TSDB as well
+  u_int32_t cr_elapsed;         // consolidation rounds elapsed on data (implicitly the number of the fine tsdb flushes)
+  metrics_t new_metrics;        // emptied during each write cycle in a respective consolidated DB
+  time_t last_flush_time;       // last sync'ed epoch in the related consolidated TSDB as well
 } tsdb_row_t;
 
 typedef  struct {
-  tsdb_row_t **rows; // it is a pointer to pointers to tsdbw_handle.mod_accum and tsdbw_handle.coarse_accum
+  tsdb_row_t **rows;            // it is a pointer to pointers to tsdbw_handle.mod_accum and tsdbw_handle.coarse_accum
   u_int8_t num_of_rows;
-  time_t *last_accum_update; // pointer to tsdbw_handle.last_accum_update
+  time_t *last_accum_update;    // pointer to tsdbw_handle.last_accum_update
 } pointers_collection_t;
 
 typedef struct {
   char mode;
-  tsdb_handler **db_hs; // number of DBs is defined by TSDBW_DB_NUM
+  tsdb_handler **db_hs;         // number of DBs is defined by TSDBW_DB_NUM
   tsdb_row_t mod_accum;
   tsdb_row_t coarse_accum;
-  time_t last_accum_update; // using this time we can find out which epoch the consolidated data should be attributed to. Every fine TSDB sync -> data callback -> consolidation buffers updated incrementally -> this timer updated
+  time_t last_accum_update;     // using this time we can find out which epoch the consolidated data should be attributed to. Every fine TSDB sync -> data callback -> consolidation buffers updated incrementally -> this timer updated
   pointers_collection_t cb_communication;
 } tsdbw_handle;
 
@@ -82,7 +82,7 @@ typedef struct {
 typedef struct {
   time_t epoch_from;
   time_t epoch_to;
-  char **metrics;         // array of strings, which are names of metrics
+  char **metrics;               // array of strings, which are names of metrics
   u_int32_t metrics_num;        // number of metrics in "metrics" array
   char granularity_flag;        // the TSDB where search is to be done (fine, moderate, coarse)
 } q_request_t;
@@ -93,7 +93,7 @@ int tsdbw_query(tsdbw_handle *db_set_h, // handle of all DBs, must be preallocat
 
 
 int tsdbw_write(tsdbw_handle *db_set_h,      // handle of all DBs, must be preallocated
-                char **metrics,        // array of strings, which are names of metrics, length num_elem
+                char **metrics,              // array of strings, which are names of metrics, length num_elem
                 const int64_t *values,       // array of values for the metrics, length num_elem
                 u_int32_t num_elem);         // number of metrics and respective values to write into TSDB
 
@@ -107,6 +107,8 @@ int tsdbw_init(tsdbw_handle *db_set_h,    // handle of all DBs, must be prealloc
                                           // 'a' to open existing for reading/writing
 
 void tsdbw_close(tsdbw_handle *handle);
+
+int consolidate_incrementally(tsdb_value *new_data, tsdb_row_t *row);
 
 
 #endif /* TSDB_WRAPPER_API_H_ */

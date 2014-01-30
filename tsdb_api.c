@@ -398,7 +398,7 @@ static void set_key_index(tsdb_handler *handler, char *key, u_int32_t index) {
 
     db_put(handler, str, strlen(str), &index, sizeof(index));
 
-    trace_info("[SET] Mapping %s -> %u", key, index);
+    trace_info("[NEW_SET] Mapping %s -> %u", key, index);
 }
 
 int tsdb_goto_epoch(tsdb_handler *handler,

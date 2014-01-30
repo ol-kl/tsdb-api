@@ -96,15 +96,15 @@ static void process_args(int argc, char **argv, set_args *args) {
   }
 }
 
-int metrics_create(char ***metrics_arr) {
+int metrics_create(char ***metrics_arr, u_int32_t mnum) {
 
   char **metrics;
   u_int32_t cnt;
 
-  metrics = (char **) malloc_darray(TSDB_DG_METRIC_NUM, MAX_METRIC_STRING_LEN, sizeof(char));
+  metrics = (char **) malloc_darray(mnum, MAX_METRIC_STRING_LEN, sizeof(char));
   if (!metrics) goto err_cleanup;
 
-  for (cnt = 0; cnt < TSDB_DG_METRIC_NUM; ++cnt) {
+  for (cnt = 0; cnt < mnum; ++cnt) {
       if (sprintf(metrics[cnt], "m-%u", cnt +1) < 0) goto err_cleanup;
   }
 
@@ -112,13 +112,13 @@ int metrics_create(char ***metrics_arr) {
   return 0;
 
   err_cleanup:
-  free_darray(TSDB_DG_METRIC_NUM, (void **)metrics);
+  free_darray(mnum, (void **)metrics);
   *metrics_arr = NULL;
   return -1;
 }
 
-void metrics_destroy(char ***metrics_arr) {
-  free_darray(TSDB_DG_METRIC_NUM,(void **) *metrics_arr);
+void metrics_destroy(char ***metrics_arr, u_int32_t mnum) {
+  free_darray(mnum,(void **) *metrics_arr);
   *metrics_arr = NULL;
 }
 
@@ -136,7 +136,7 @@ int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoc
 
   vals_to_write = (int64_t *) calloc(metr_num, sizeof(int64_t));
 
-  if (metrics_create(&metrics)) {return -1; }
+  if (metrics_create(&metrics, metr_num)) {return -1; }
 
   for (cnt = 0; cnt < metr_num; ++cnt) {
       vals_to_write[val_idx] = values[cnt][epoch_idx];
@@ -150,17 +150,17 @@ int write_pattern_epoch(tsdbw_handle *db_bundle, int64_t **values, u_int8_t epoc
   rv = tsdbw_write(db_bundle, metrics, vals_to_write, val_idx);
   assert_true(rv == 0);
 
-  metrics_destroy(&metrics);
+  metrics_destroy(&metrics, metr_num);
   free(vals_to_write);
 
   return 0;
 }
 
-void print_pattern(DArray *p) {
+void print_pattern(DArray *p, char *str) {
   size_t i, j;
   if (p == NULL) exit(1);
   if (p->__data_allocated == 0) exit(2);
-  printf("Pattern to be written [metric vals][epochs]:\n");
+  printf("%s\n",str);
 
   for (i = 0; i < p->rown; ++i) {
       for (j = 0; j < p->coln; ++j) {
@@ -177,7 +177,7 @@ void csv_cb_field(void *field, size_t field_size, void *ext_data) {
   csv_tracker *arg = (csv_tracker *) ext_data;
   if (arg->ccol == 0) arg->storage->add_row(arg->storage, 1);
   arg->ccol ++;
-  if (arg->ccol > arg->storage->coln) arg->storage->add_col(arg->storage, 1);
+  if (arg->ccol > arg->storage->coln) arg->storage->add_col(arg->storage, 1, 1);
   if (field != NULL) { //if field is not empty
       errno = 0;
       pval = strtol(field, NULL, 0);
@@ -240,7 +240,7 @@ int parse_pattern(char *str_file, DArray **pattern) {
 //  print_pattern(*pattern); //for debug only
   if (!pattern_consistent(*pattern)) {printf("ERR: pattern first row must have increasing numbers\n"); return -1;}
   *pattern = inflate_pattern(*pattern);
-  print_pattern(*pattern); //for debug only
+  print_pattern(*pattern, "Fine TSDB duty cycle pattern to write"); //for debug only
   return 0;
 }
 
@@ -273,7 +273,6 @@ void read_fpattern(set_args *args, DArray **pattern) {
       if (*fline == COMMENT_CHAR ||
           *fline == LF_CHAR ||
           *fline == CR_CHAR) {free(fline); continue;} //ignore a line it it start with # or \n or \r
-      //metrics_num++; //TODO make use of it
       str_file_n = strapp(str_file_o, fline); if (str_file_n == NULL) exit(5);
       str_file_o = str_file_n;
       free(fline);
@@ -330,7 +329,7 @@ int writing_cycle_engage(tsdbw_handle *db_bundle, DArray *vals, u_int32_t *epoch
     normalize_epoch(db_bundle->db_hs[0], &cur_epoch);
     last_epoch = cur_epoch;
 
-    while (epoch_cnt < TSDB_DG_EPOCHS_NUM) {
+    while (epoch_cnt < vals->coln) {
 
             epoch_cnt++; (*epoch_glob_cnt) ++;
             tfprintf(stdout,"Epoch %u. Writing... ", *epoch_glob_cnt);
@@ -356,6 +355,7 @@ int writing_cycle_engage(tsdbw_handle *db_bundle, DArray *vals, u_int32_t *epoch
             // Epoch rollover
             last_epoch = cur_epoch;
     }
+    /* Loop ends at the beginning of vals->coln + 1 epoch*/
 
   return 0;
 }
@@ -412,34 +412,145 @@ int open_dbs(tsdbw_handle *db_bundle, const char **db_paths, char mode) {
   }
 }
 
-int prepare_args_q_test1(tsdbw_handle *db_bundle, q_request_t *req) {
+int prepare_args_q_test1(tsdbw_handle *db_bundle, q_request_t *req, u_int32_t mnum) {
 
   req->granularity_flag = TSDBW_FINE;
-  req->epoch_from = db_bundle->db_hs[0]->epoch_list[0] - db_bundle->db_hs[0]->slot_duration * 1.5;
-  req->epoch_to = db_bundle->db_hs[0]->epoch_list[db_bundle->db_hs[0]->number_of_epochs - 1] + db_bundle->db_hs[0]->slot_duration * 1.5;
-  req->metrics_num = TSDB_DG_METRIC_NUM;
+  req->epoch_from = db_bundle->db_hs[TSDBW_FINE]->epoch_list[0] - db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->epoch_to = db_bundle->db_hs[TSDBW_FINE]->epoch_list[db_bundle->db_hs[TSDBW_FINE]->number_of_epochs - 1] + db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->metrics_num = mnum;
 
   char **metrics;
-  if (metrics_create(&metrics) ) return -1;
+  if (metrics_create(&metrics, mnum) ) return -1;
   req->metrics = metrics;
 
   return 0;
 }
 
-int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep, u_int32_t *sleep_time) {
+int prepare_args_q_test2(tsdbw_handle *db_bundle, q_request_t *req, u_int32_t mnum) {
 
-  /* form list of anticipated epochs */
+  req->granularity_flag = TSDBW_MODERATE;
+  req->epoch_from = db_bundle->db_hs[TSDBW_FINE]->epoch_list[0] - db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->epoch_to = db_bundle->db_hs[TSDBW_FINE]->epoch_list[db_bundle->db_hs[TSDBW_FINE]->number_of_epochs - 1] + db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->metrics_num = mnum;
 
-  /* 3 from extra requested range:
-   * 2 before the first one and 1 after the last one */
-  int i, j, rv;
+  char **metrics;
+  if (metrics_create(&metrics, mnum) ) return -1;
+  req->metrics = metrics;
+
+  return 0;
+}
+
+int prepare_args_q_test3(tsdbw_handle *db_bundle, q_request_t *req, u_int32_t mnum) {
+
+  req->granularity_flag = TSDBW_COARSE;
+  req->epoch_from = db_bundle->db_hs[TSDBW_FINE]->epoch_list[0] - db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->epoch_to = db_bundle->db_hs[TSDBW_FINE]->epoch_list[db_bundle->db_hs[TSDBW_FINE]->number_of_epochs - 1] + db_bundle->db_hs[TSDBW_FINE]->slot_duration * 1.5;
+  req->metrics_num = mnum;
+
+  char **metrics;
+  if (metrics_create(&metrics, mnum) ) return -1;
+  req->metrics = metrics;
+
+  return 0;
+}
+
+void replicate_ftsdb(DArray *pattern, DArray *replica, u_int32_t ep_sleep) {
+    int i, rv;
+    /* pattern follows first */
+    for (i = 0; i < pattern->coln; ++i) replica->app_col(replica, pattern->get_col(pattern, i), pattern->rown);
+    assert_true(replica->coln == pattern->coln );
+
+    /* Then the outage phase */
+    rv = replica->add_col(replica, ep_sleep, 1);
+    assert_true(rv == 0);
+    assert_true(replica->coln ==  pattern->coln + ep_sleep);
+
+    /* Then the same pattern once more */
+    for (i = 0; i < pattern->coln; ++i) replica->app_col(replica, pattern->get_col(pattern, i), pattern->rown);
+    assert_true(replica->coln == 2*pattern->coln + ep_sleep);
+}
+
+uint_fast8_t isarreq(void *arr, void *val, uint_fast8_t typelen, size_t elem_num) {
+
+  size_t i;
+  uint_fast8_t j;
+
+  for (i = 0; i < elem_num; ++i) {
+      for (j = 0; j < typelen; ++j) {
+          if (((BYTE(arr + i * typelen))[j] ^ (BYTE(val))[j]) != 0) goto end;
+      }
+  }
+
+end:
+return i == elem_num && j == typelen;
+}
+
+DArray * consolidate(DArray *base, float cint, void *fillval){
+  /* *base is array of values from the fine TSDB to consolidate. Columns are epochs, rows are metrics */
+  /* cint is consolidation interval calculated as: epoch_length_curren_TSDB / epoch_length_fine_TSDB */
+  /* *fillval is default filling values for the array of consolidated data*/
+
+  size_t ci, mult;
+  tsdb_value *col, cval = 0;
+
+  tsdb_row_t accum;
+  memset(&accum, 0, sizeof(accum));
+  accum.data = calloc(base->rown, sizeof(tsdb_value));
+  if (accum.data == NULL) return NULL;
+  accum.size = base->rown;
+
+  DArray *carr = new_darray(base->rown, 0, sizeof(int64_t), fillval);
+  if (carr == NULL) {
+      free(accum.data);
+      return NULL;
+  }
+
+  for (ci = 0, mult = 1; ci < base->coln; ++ci) {
+
+      col = (tsdb_value *)base->get_col(base, ci); assert_true(col != NULL);
+
+      if (!isarreq(col, &cval, sizeof(tsdb_value), accum.size)) {
+          consolidate_incrementally(col, &accum);
+      }
+
+      if ((ci + 1 >= (float) (cint * mult)) || // if a new epoch has come
+          (ci + 1 == base->coln)) {             // or TSDB is going to get closed
+          mult++;
+          carr->app_col(carr, (void *)accum.data, base->rown);
+          accum.cr_elapsed = 0;
+
+          memset(accum.data, 0, base->rown * sizeof(tsdb_value));
+      }
+  }
+
+  free(accum.data);
+
+  assert_true(mult - 1 == carr->coln);
+  return carr;
+}
+
+
+int32_t ep_num(tsdb_handler *h, u_int32_t from, u_int32_t to) {
+
+  if (to < from || h == NULL) return -1;
+  normalize_epoch(h, &from);
+  normalize_epoch(h, &to);
+  return (to - from) / h->slot_duration;
+}
+
+int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep,q_request_t *req, u_int32_t *sleep_time) {
+  int i, j;
   DArray *pattern, *anvals;
   pattern = new_darray(0, 0, sizeof(h->unknown_value), &h->unknown_value);
   assert_true(pattern != NULL);
   read_fpattern(args, &pattern);
 
-  u_int32_t ep_afront_num = 2, ep_trail_num = 1, ep_sleep = *sleep_time/ h->slot_duration;
-  u_int32_t num_epochs = pattern->coln * 2 + ep_sleep + ep_afront_num + ep_trail_num; // == 48
+  u_int32_t ep_afront_num, ep_trail_num, ep_sleep_ftsdb = *sleep_time/ TSDB_DG_FINE_TS;
+  ep_afront_num = ep_num(h, req->epoch_from, h->epoch_list[0]); // == 2
+  ep_trail_num = ep_num(h, h->most_recent_epoch, req->epoch_to); // == 1
+  assert_true(ep_afront_num >= 0 && ep_trail_num >= 0);
+
+  u_int32_t num_epochs = pattern->coln * 2 + ep_sleep_ftsdb + ep_afront_num + ep_trail_num; // == 48
   assert_true(num_epochs == rep->epochs_num_res);
 
   u_int32_t *anepochs = (u_int32_t *) malloc(num_epochs * sizeof *anepochs); //anticipated epochs
@@ -455,80 +566,23 @@ int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep, u_int32_
   }
 
   /** Creating anticipated values **/
-  //TODO refactor **values_chunk_an
+  anvals = new_darray(0, 0, sizeof(int64_t), (void *) h->unknown_value);assert_true(anvals != NULL);
+  replicate_ftsdb(pattern, anvals, ep_sleep_ftsdb);
 
-  //int64_t **values_chunk_an;
-  // rv = create_pattern(& values_chunk_an); assert_true(rv == 0);
-  //int64_t **values_an = (int64_t **) malloc_darray(TSDB_DG_METRIC_NUM, num_epochs, sizeof(int64_t)); assert_true(values_an != NULL);
+  anvals->add_col(anvals, ep_afront_num, 0);
+  anvals->add_col(anvals, ep_trail_num, 1);
 
-  /** Creating anticipated values **/
-  /* First two epochs for all metrics must have default values
-   * as they are not contained in the TSDB and were requested this
-   * way deliberately */
-  anvals = new_darray(pattern->rown, 0, sizeof(h->unknown_value), &h->unknown_value);
-  assert_true(anvals != NULL);
-
-  anvals->add_col(anvals, ep_afront_num);
-
-//  u_int32_t epochs_done = 0;
-//  for(i = 0; i <  ep_afront_num; ++i) {
-//      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
-//          values_an[j][i] = h->unknown_value;
-//      }
-//  }
-//  epochs_done = i;
-//  assert_true(epochs_done == ep_afront_num);
-  assert_true(anvals->coln == ep_afront_num);
-
-  /* Then the pattern follows */
-  for (i = 0; i < pattern->coln; ++i) anvals->app_col(anvals, pattern->get_col(pattern, i), pattern->rown);
-  assert_true(anvals->coln == ep_afront_num + TSDB_DG_EPOCHS_NUM);
-
-//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-//      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
-//  }
-//  epochs_done += TSDB_DG_EPOCHS_NUM;
-//  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM);
-
-  /* Then the outage phase */
-  rv = anvals->add_col(anvals, ep_sleep);
-  assert_true(rv == 0);
-  assert_true(anvals->coln == ep_afront_num + TSDB_DG_EPOCHS_NUM + ep_sleep);
-
-//  for(i = 0; i <  ep_sleep; ++i) {
-//      for(j = 0; j <  TSDB_DG_METRIC_NUM; ++j) {
-//          values_an[j][epochs_done + i] = h->unknown_value;
-//      }
-//  }
-//  epochs_done += *sleep_time/ h->slot_duration;
-//  assert_true(epochs_done == ep_afront_num + TSDB_DG_EPOCHS_NUM + ep_sleep);
-
-  /* Then the same pattern once more */
-  for (i = 0; i < pattern->coln; ++i) anvals->app_col(anvals, pattern->get_col(pattern, i), pattern->rown);
-  assert_true(anvals->coln == ep_afront_num + 2*TSDB_DG_EPOCHS_NUM + ep_sleep);
-  pattern->destroy(pattern);
-
-//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-//      memcpy(&values_an[i][epochs_done], values_chunk_an[i], TSDB_DG_EPOCHS_NUM);
-//  }
-//  epochs_done += TSDB_DG_EPOCHS_NUM;
-//  assert_true(epochs_done == ep_afront_num + 2*TSDB_DG_EPOCHS_NUM + ep_sleep);
-//  free_darray(TSDB_DG_METRIC_NUM, (void **)values_chunk_an);
-
-  /* Finally one trailing epoch with default data, as it does not exist in the TSDB */
-  anvals->add_col(anvals, ep_trail_num);
-  assert_true(anvals->coln == num_epochs);
-
-//  for (i = 0; i < TSDB_DG_METRIC_NUM; ++i) {
-//      values_an[i][epochs_done] = h->unknown_value;
-//  }
-//  epochs_done += ep_trail_num;
-//  assert_true(epochs_done == num_epochs);
-
+  printf("Test: correctness of fine TSDB data...\n");
   /** Comparing anticipated and actual results of the TSDB query **/
   for(i = 0; i <  anvals->rown; ++i) {
       for(j = 0; j <  anvals->coln; ++j) {
-          printf("Check. met %d, ep %d: val %ld == %ld\n", i+1, j+1, rep->tuples[i][j].value, ((int64_t**)anvals->data)[i][j]);
+          if (rep->tuples[i][j].value != ((int64_t**)anvals->data)[i][j]) {
+              printf("Metric value wrong. Met %d, epoch %d, val: available %ld, anticipated %ld\n", i+1, j+1, rep->tuples[i][j].value, ((int64_t**)anvals->data)[i][j]);
+          }
+          if (rep->tuples[i][j].epoch != anepochs[j]) {
+              printf("Epoch is wrong. Available %d, anticipated %d\n", (u_int32_t)rep->tuples[i][j].epoch, anepochs[j]);
+
+          }
           assert_true(rep->tuples[i][j].value == ((int64_t**)anvals->data)[i][j]);
           assert_true(rep->tuples[i][j].epoch == anepochs[j]);
       }
@@ -536,10 +590,152 @@ int verify_reply_test1(set_args *args, tsdb_handler *h, q_reply_t *rep, u_int32_
 
   free(anepochs);
   anvals->destroy(anvals);
-  //free_darray(TSDB_DG_METRIC_NUM, (void **)values_an);
+  printf("Done\n");
   return 0;
 }
 
+int verify_reply_test2(set_args *args, tsdb_handler *h, q_reply_t *rep, q_request_t *req, u_int32_t *sleep_time) {
+  int i, j;
+  DArray *pattern, *anvals, *ftsdb_replica;
+  pattern = new_darray(0, 0, sizeof(h->unknown_value), &h->unknown_value);
+  assert_true(pattern != NULL);
+  read_fpattern(args, &pattern);
+
+  printf("Test: correctness of moderate TSDB data...\n");
+  u_int32_t ep_afront_num, ep_trail_num, ep_sleep_ftsdb = *sleep_time/ TSDB_DG_FINE_TS;
+  ep_afront_num = ep_num(h, req->epoch_from, h->epoch_list[0]); // == 1
+  ep_trail_num = ep_num(h, h->most_recent_epoch, req->epoch_to); // == 0
+  assert_true(ep_afront_num >= 0 && ep_trail_num >= 0);
+
+  /** Creating anticipated values **/
+  ftsdb_replica = new_darray(0, 0, sizeof(int64_t), (void *) h->unknown_value);
+  replicate_ftsdb(pattern, ftsdb_replica, ep_sleep_ftsdb);
+  anvals = consolidate(ftsdb_replica, (float)h->slot_duration / (float)TSDB_DG_FINE_TS,(void *) h->unknown_value);
+  assert_true(anvals != NULL);
+
+  u_int32_t num_epochs = ep_afront_num + anvals->coln + ep_trail_num;// == ?
+  assert_true(num_epochs == rep->epochs_num_res);
+
+  anvals->add_col(anvals, ep_afront_num, 0);
+  anvals->add_col(anvals, ep_trail_num, 1);
+  print_pattern(anvals, "Anticipated values in moderate TSDB:");
+
+  if (args->verbose_lvl > 0) {
+      printf("Moderate TSDB contents:\n");
+      for(i = 0; i <  anvals->rown; ++i) {
+          for(j = 0; j <  anvals->coln; ++j) {
+              printf("%2ld ",rep->tuples[i][j].value);
+          }
+          printf("\n");
+      }
+  }
+
+  /** Creating anticipated epochs **/
+  u_int32_t *anepochs = (u_int32_t *) malloc(num_epochs * sizeof *anepochs); //anticipated epochs
+  assert_true(anepochs != NULL);
+
+  /* First anticipated epoch */
+  anepochs[0] =  h->epoch_list[0] - ep_afront_num * h->slot_duration;
+
+  /* Rest of them */
+  for(i = 1; i < num_epochs; ++i) {
+      anepochs[i] = anepochs[0]  + i * h->slot_duration;
+  }
+
+  /** Comparing anticipated and actual results of the TSDB query **/
+  for(i = 0; i <  anvals->rown; ++i) {
+      for(j = 0; j <  anvals->coln; ++j) {
+          if (rep->tuples[i][j].value != ((int64_t**)anvals->data)[i][j]) {
+              printf("Metric value wrong. Met %d, epoch %d, val: available %ld, anticipated %ld\n", i+1, j+1, rep->tuples[i][j].value, ((int64_t**)anvals->data)[i][j]);
+          }
+          if (rep->tuples[i][j].epoch != anepochs[j]) {
+              printf("Epoch is wrong. Available %d, anticipated %d\n", (u_int32_t)rep->tuples[i][j].epoch, anepochs[j]);
+
+          }
+          assert_true(rep->tuples[i][j].value == ((int64_t**)anvals->data)[i][j]);
+          assert_true(rep->tuples[i][j].epoch == anepochs[j]);
+      }
+  }
+
+  free(anepochs);
+  pattern->destroy(pattern);
+  anvals->destroy(anvals);
+  ftsdb_replica->destroy(ftsdb_replica);
+  printf("Done\n");
+
+  return 0;
+}
+
+int verify_reply_test3(set_args *args, tsdb_handler *h, q_reply_t *rep, q_request_t *req, u_int32_t *sleep_time) {
+  int i, j;
+  DArray *pattern, *anvals, *ftsdb_replica;
+  pattern = new_darray(0, 0, sizeof(h->unknown_value), &h->unknown_value);
+  assert_true(pattern != NULL);
+  read_fpattern(args, &pattern);
+
+  printf("Test: correctness of coarse TSDB data...\n");
+  u_int32_t ep_afront_num , ep_trail_num , ep_sleep_ftsdb = *sleep_time/ TSDB_DG_FINE_TS;
+  ep_afront_num = ep_num(h, req->epoch_from, h->epoch_list[0]); // == 1
+  ep_trail_num = ep_num(h, h->most_recent_epoch, req->epoch_to); // == 1
+  assert_true(ep_afront_num >= 0 && ep_trail_num >= 0);
+
+  /** Creating anticipated values **/
+  ftsdb_replica = new_darray(0, 0, sizeof(int64_t), (void *) h->unknown_value);
+  replicate_ftsdb(pattern, ftsdb_replica, ep_sleep_ftsdb);
+  anvals = consolidate(ftsdb_replica, (float)h->slot_duration / (float)TSDB_DG_FINE_TS,(void *) h->unknown_value);
+  assert_true(anvals != NULL);
+
+  u_int32_t num_epochs = ep_afront_num + anvals->coln + ep_trail_num;// == 19
+  assert_true(num_epochs == rep->epochs_num_res);
+
+  anvals->add_col(anvals, ep_afront_num, 0);
+  anvals->add_col(anvals, ep_trail_num, 1);
+  print_pattern(anvals, "Anticipated values in coarse TSDB:");
+
+  if (args->verbose_lvl > 0) {
+      printf("Coarse TSDB contents:\n");
+      for(i = 0; i <  anvals->rown; ++i) {
+          for(j = 0; j <  anvals->coln; ++j) {
+              printf("%2ld ",rep->tuples[i][j].value);
+          }
+          printf("\n");
+      }
+  }
+
+  /** Creating anticipated epochs **/
+  u_int32_t *anepochs = (u_int32_t *) malloc(num_epochs * sizeof *anepochs); //anticipated epochs
+  assert_true(anepochs != NULL);
+  /* First anticipated epoch */
+  anepochs[0] =  h->epoch_list[0] - ep_afront_num * h->slot_duration;
+
+  /* Rest of them */
+  for(i = 1; i < num_epochs; ++i) {
+      anepochs[i] = anepochs[0]  + i * h->slot_duration;
+  }
+
+  /** Comparing anticipated and actual results of the TSDB query **/
+  for(i = 0; i <  anvals->rown; ++i) {
+      for(j = 0; j <  anvals->coln; ++j) {
+          if (rep->tuples[i][j].value != ((int64_t**)anvals->data)[i][j]) {
+              printf("Metric value wrong. Met %d, epoch %d, val: available %ld, anticipated %ld\n", i+1, j+1, rep->tuples[i][j].value, ((int64_t**)anvals->data)[i][j]);
+          }
+          if (rep->tuples[i][j].epoch != anepochs[j]) {
+              printf("Epoch is wrong. Available %d, anticipated %d\n", (u_int32_t)rep->tuples[i][j].epoch, anepochs[j]);
+
+          }
+          assert_true(rep->tuples[i][j].value == ((int64_t**)anvals->data)[i][j]);
+          assert_true(rep->tuples[i][j].epoch == anepochs[j]);
+      }
+  }
+
+  free(anepochs);
+  pattern->destroy(pattern);
+  anvals->destroy(anvals);
+  ftsdb_replica->destroy(ftsdb_replica);
+  printf("Done\n");
+
+  return 0;
+}
 void reply_data_destroy(q_reply_t *rep) {
 
   int i;
@@ -573,6 +769,17 @@ u_int8_t dbs_exist(const char **db_paths) {
       if (!fexist(db_paths[i])) return 0;
   }
   return 1;
+}
+
+void print_epochs(tsdb_handler *h){
+  char timestr[32];
+  size_t i;
+  printf("List of epochs (CTSDB):\n");
+
+  for (i = 0; i < h->number_of_epochs; ++i) {
+      time2str(&h->epoch_list[i], timestr, 32);
+      printf("%s\n", timestr);
+  }
 }
 
 void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) {
@@ -611,12 +818,8 @@ void test_write(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) 
   pattern->destroy(pattern);
 
   /* Reporting the first and last epochs available in fine TSDB */
-  rv = open_dbs(db_bundle, db_paths, 'a'); assert_true(rv == 0);
-  char timestr[32];
-  time2str(&db_bundle->db_hs[TSDBW_FINE]->epoch_list[0], timestr, 32);
-  printf("Fine TSDB: first epoch: %s\n", timestr);
-  time2str(&db_bundle->db_hs[TSDBW_FINE]->epoch_list[db_bundle->db_hs[TSDBW_FINE]->number_of_epochs - 1], timestr, 32);
-  printf("Fine TSDB: last epoch: %s\n", timestr);
+  rv = open_dbs(db_bundle, db_paths, 'r'); assert_true(rv == 0);
+  print_epochs(db_bundle->db_hs[TSDBW_COARSE]);
   tsdbw_close(db_bundle);
 
 }
@@ -627,25 +830,53 @@ void test_read(set_args *args, tsdbw_handle *db_bundle, const char **db_paths) {
 
   /* Reading TSDBs */
   rv = open_dbs(db_bundle, db_paths, 'r'); assert_true(rv == 0);
-  sleep_time = 2 * db_bundle->db_hs[2]->slot_duration;
+  sleep_time = 2 * db_bundle->db_hs[TSDBW_COARSE]->slot_duration;
 
-  /* 1 Read whole fine TSDB (with extra range) and check correctness of data */
+
   q_request_t req;
   q_reply_t rep;
-  rv = prepare_args_q_test1(db_bundle, &req); assert_true(rv == 0);
+  u_int32_t metrics_num;
+  DArray *pattern = new_darray(0, 0, sizeof(int64_t), &db_bundle->db_hs[TSDBW_FINE]->unknown_value);
+  read_fpattern(args, &pattern);
+  metrics_num = pattern->rown;
+  pattern->destroy(pattern);
+
+  /* 1 Read whole fine TSDB (with extra range) and check correctness of data */
+  memset(&req, 0, sizeof(req));
+  memset(&rep, 0, sizeof(rep));
+  rv = prepare_args_q_test1(db_bundle, &req, metrics_num); assert_true(rv == 0);
   rv = tsdbw_query(db_bundle, &req, &rep); assert_true(rv == 0);
-  rv = verify_reply_test1(args, db_bundle->db_hs[0], &rep, &sleep_time); assert_true(rv == 0);
+  rv = verify_reply_test1(args, db_bundle->db_hs[TSDBW_FINE], &rep, &req, &sleep_time); assert_true(rv == 0);
 
   reply_data_destroy(&rep);
-  metrics_destroy(&req.metrics);
+  metrics_destroy(&req.metrics, metrics_num);
 
 
   /* 2. Read whole moderate TSDB (with extra range) and check correctness of consolidated data */
+  memset(&req, 0, sizeof(req));
+  memset(&rep, 0, sizeof(rep));
+  rv = prepare_args_q_test2(db_bundle, &req, metrics_num); assert_true(rv == 0);
+  rv = tsdbw_query(db_bundle, &req, &rep); assert_true(rv == 0);
+  rv = verify_reply_test2(args, db_bundle->db_hs[TSDBW_MODERATE], &rep, &req, &sleep_time); assert_true(rv == 0);
+
+  reply_data_destroy(&rep);
+  metrics_destroy(&req.metrics, metrics_num);
+
   /* 3. Read whole coarse TSDB (with extra range) and check correctness of consolidated data */
+  memset(&req, 0, sizeof(req));
+  memset(&rep, 0, sizeof(rep));
+  rv = prepare_args_q_test3(db_bundle, &req, metrics_num); assert_true(rv == 0);
+  rv = tsdbw_query(db_bundle, &req, &rep); assert_true(rv == 0);
+  rv = verify_reply_test3(args, db_bundle->db_hs[TSDBW_COARSE], &rep, &req, &sleep_time); assert_true(rv == 0);
+
+  reply_data_destroy(&rep);
+  metrics_destroy(&req.metrics, metrics_num);
+
   /* Testing querying of epoch ranges using times encompassing them: */
   /* 4. Fine TSDB: randomly read epoch ranges/metrics and check correctness  */
   /* 5. Moderate TSDB: randomly read epoch ranges/metrics and check correctness  */
   /* 6. Coarse TSDB: randomly read epoch ranges/metrics and check correctness  */
+  tsdbw_close(db_bundle);
 }
 
 int main(int argc, char *argv[]) {
