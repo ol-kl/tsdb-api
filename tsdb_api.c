@@ -23,7 +23,7 @@
 
 #include "tsdb_api.h"
 #include "tsdb_bitmap.h"
-#include "seatest.h"
+//#include "seatest.h"
 
 static void db_put(tsdb_handler *handler,
                    void *key, u_int32_t key_len,
@@ -280,7 +280,10 @@ static void tsdb_flush_chunk(tsdb_handler *handler) {
          * every time we flush a chunk for a new epoch into DB. However
          * if we have about 1 million of epochs and have to sort them for
          * every DB flush, it can prove being greedy for too much CPU resources */
-        assert_true(handler->most_recent_epoch < handler->chunk.epoch);
+        if (handler->most_recent_epoch > handler->chunk.epoch) {
+        	trace_error("Fatal logic error: current epoch is older than the last one available in the TSDB");
+        	exit(1);
+        }
 
         rv = epoch_list_add(handler, handler->chunk.epoch);
         if (rv) {
@@ -368,8 +371,11 @@ void tsdb_close(tsdb_handler *handler) {
         trace_info("Flushing database changes...");
     }
 
-    free(handler->epoch_list);
     handler->db->close(handler->db, 0);
+    if (handler->epoch_list) {
+    	free(handler->epoch_list);
+    	handler->epoch_list = NULL;
+    }
 
     handler->alive = 0;
 }

@@ -8,8 +8,7 @@
 #include "tsdb_aux_tools.h"
 
 int fexist(const char* fname) {
-  if (access(fname,F_OK) != 0) return 0;
-  return 1;
+	return !access(fname,F_OK);
 }
 
 int fremove(const char* fname) {

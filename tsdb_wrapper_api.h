@@ -10,7 +10,7 @@
  * Three DBs will be created with configured time step
  * between epochs, internal consolidation function will
  * take care of calculation and timely update of consolidated
- * data poitns in the respective DBs. Data points are expected
+ * data points in the respective DBs. Data points are expected
  * to be fed at the frequency corresponding to the finest time
  * step across all configured DBs. They will be saved in the
  * finest DB, others will be populated with consolidated values

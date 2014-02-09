@@ -28,7 +28,7 @@ struct darray{
   size_t rown;
   u_int8_t __data_allocated;
   size_t __elem_size;
-  void (* destroy)(DArray *self); //destructor for the structure
+  void (* destroy)(DArray *self); 	//destructor for the structure
   void (* wipe_data)(DArray *self); //delete and deallocate only internal data, preserving the same filling element and the size of type
   int (*add_col)(DArray *self, u_int32_t n, u_int8_t to_end); //add n columns at the end (if to_end is true) of the array and fill them with default value. If to_end is false - add cols at the beginning.
   int (*app_col)(DArray *self, void *cdata, size_t cdata_num_elem); //append one given column at the end

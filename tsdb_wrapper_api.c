@@ -22,7 +22,7 @@
 
 #include "tsdb_wrapper_api.h"
 
-#define _TSDBW_DEBUG_
+//#define _TSDBW_DEBUG_
 
 #define lambda(l_ret_type, l_arguments, l_body)         \
         ({                                                    \
@@ -719,7 +719,7 @@ static int fine_tsdb_update(tsdbw_handle *db_set_h,
       return -1;
   }
 
-#if defined __GNUC__
+#if defined __GNUC__ && !defined __clang__
 
   /* This hack works only with GCC. The function is unpacked for other compilers. */
   rv = lambda(int,

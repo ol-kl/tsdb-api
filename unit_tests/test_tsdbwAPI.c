@@ -29,9 +29,9 @@
 #define TSDB_DG_EPOCHS_NUM 20
 #define TSDB_DG_FINE_TS 2
 #define MAX_PATH_LEN 50
-#define COMMENT_CHAR '#'
-#define LF_CHAR '\n'
-#define CR_CHAR '\r'
+#define COMMENT_CHAR '#' //for pattern CSV file
+#define LF_CHAR '\n'	 //for pattern CSV file
+#define CR_CHAR '\r'	 //for pattern CSV file
 
 typedef struct {
     int verbose_lvl;
